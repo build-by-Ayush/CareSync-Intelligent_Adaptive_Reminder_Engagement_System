@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    tools:context=".MainActivity">
+
+    <!-- Set full-screen image as background -->
+    <ImageView
+        android:id="@+id/backgroundImage"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="centerCrop"
+        android:src="@drawable/welcomepage" />
+
+    <!-- Dummy button (can be styled/positioned later) -->
+    <Button
+        android:id="@+id/getStartedButton"
+        android:layout_width="50dp"
+        android:layout_height="770dp"
+        android:text="Get Started"
+        android:layout_centerInParent="true"
+        android:backgroundTint="#C451C9"
+        android:textColor="#FFCBDD" />
+</RelativeLayout>
