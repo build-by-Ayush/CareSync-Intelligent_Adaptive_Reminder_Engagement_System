@@ -48,7 +48,6 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import android.content.Intent
 import android.graphics.drawable.Drawable
-import android.util.Log
 import androidx.compose.foundation.border
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -66,13 +65,8 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import com.example.caresync.domain.Priority
 import com.example.caresync.domain.TriggerMode
 import com.example.caresync.domain.NotifyMethod
-import java.util.Calendar
 import com.example.caresync.domain.RecurrenceType
 import com.example.caresync.domain.IntervalUnit
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.window.Dialog
-import androidx.compose.foundation.border
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.rememberDatePickerState
