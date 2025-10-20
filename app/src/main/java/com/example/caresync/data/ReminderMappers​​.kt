@@ -29,6 +29,12 @@ fun ReminderEntity.toDomain(): ReminderSettings = ReminderSettings(
     allowedWindowEnd = allowedWindowEnd,
     snoozeOptions = parseIntList(snoozeOptionsJson),
     maxSnoozes = maxSnoozes,
+    snoozeDurationMinutes = snoozeDurationMinutes,
+    boostModeActive = boostModeActive,
+    boostModeEndTime = boostModeEndTime,
+    boostModeFrequency = boostModeFrequency,
+    dueDate = dueDate,  // ✅ ADD
+    allowedTimePeriods = parseTimePeriods(allowedTimePeriodsJson),  // ✅ ADD THIS
     escalationPolicy = parseEscalation(escalationPolicyJson),
     createdAt = createdAt,
     updatedAt = updatedAt
@@ -61,7 +67,32 @@ fun ReminderSettings.toEntity(): ReminderEntity = ReminderEntity(
     allowedWindowEnd = allowedWindowEnd,
     snoozeOptionsJson = toJson(snoozeOptions),
     maxSnoozes = maxSnoozes,
+    snoozeDurationMinutes = snoozeDurationMinutes,
+    boostModeActive = boostModeActive,
+    boostModeEndTime = boostModeEndTime,
+    boostModeFrequency = boostModeFrequency,
+    dueDate = dueDate,  // ✅ ADD
+    allowedTimePeriodsJson = allowedTimePeriods.joinToString(",") { it.name },  // ✅ ADD THIS
     escalationPolicyJson = escalationPolicy?.let { toJson(it) },
     createdAt = createdAt,
     updatedAt = updatedAt
 )
+
+// ✅ ADD THIS HELPER FUNCTION AT THE BOTTOM
+private fun parseTimePeriods(json: String): List<TimePeriod> {
+    return try {
+        json.removeSurrounding("[", "]")
+            .split(",")
+            .map { it.trim().removeSurrounding("\"") }
+            .mapNotNull { name ->
+                try {
+                    TimePeriod.valueOf(name)
+                } catch (e: Exception) {
+                    null
+                }
+            }
+    } catch (e: Exception) {
+        // Default: all periods allowed
+        listOf(TimePeriod.MORNING, TimePeriod.AFTERNOON, TimePeriod.EVENING)
+    }
+}

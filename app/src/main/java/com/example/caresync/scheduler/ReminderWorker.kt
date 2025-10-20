@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
@@ -20,6 +21,7 @@ import com.example.caresync.receivers.CompleteTaskReceiver
 import com.example.caresync.receivers.DismissTaskReceiver
 import com.example.caresync.receivers.NotificationDeletedReceiver
 import com.example.caresync.receivers.SnoozeTaskReceiver
+import com.example.caresync.scheduler.ReminderWorker.Companion.createOpenAppIntent
 import java.util.Calendar
 
 class ReminderWorker(
@@ -38,8 +40,15 @@ class ReminderWorker(
 
         // ✅ USE DECISION PIPELINE
         val pipeline = NotificationDecisionPipeline(context)
-        val decision = pipeline.shouldSendNotification(reminder)
+        // ✅ NEW: Check if this is a snoozed notification
+        val isSnoozed = checkIfSnoozed(reminderId)
+        val triggerSource = if (isSnoozed) "SNOOZE" else "SCHEDULED"
 
+        val decision = pipeline.shouldSendNotification(
+            reminder,
+            bypassCooldown = true,
+            triggerSource = triggerSource  // ✅ UPDATED: Use detected source
+        )
         if (!decision.shouldSend) {
             // Log blocked event with reason
             repo.logEvent(
@@ -48,9 +57,9 @@ class ReminderWorker(
                 """{"rule": "${decision.blockingRule}", "reason": "${decision.reason}"}"""
             )
 
-            // Reschedule if recurring
+            // ✅ NEW: Reschedule using coordinator (if recurring)
             if (isRecurring(reminder.recurrenceType.name)) {
-                NotificationSchedulerImpl().scheduleReminder(context, reminder)
+                rescheduleNextOccurrence(reminder)
             }
 
             return Result.success()
@@ -59,7 +68,7 @@ class ReminderWorker(
         // ✅ CREATE EVENT WITH RICH CONTEXT
         val event = createEventWithContext(reminderId, reminder)
 
-        // ✅ INSERT EVENT DIRECTLY VIA DAO (NOT repo.logEvent)
+        // ✅ INSERT EVENT DIRECTLY VIA DAO
         val eventDao = AppDatabase.get(context).reminderEventDao()
         eventDao.insert(event)
 
@@ -75,12 +84,25 @@ class ReminderWorker(
             )
         }
 
-        // Reschedule if recurring
+        // ✅ NEW: Reschedule next occurrence (if recurring)
         if (isRecurring(reminder.recurrenceType.name)) {
-            NotificationSchedulerImpl().scheduleReminder(context, reminder)
+            rescheduleNextOccurrence(reminder)
         }
 
         return Result.success()
+    }
+
+    /**
+     * ✅ NEW: Reschedule next occurrence using SchedulingCoordinator
+     */
+    private suspend fun rescheduleNextOccurrence(reminder: com.example.caresync.domain.ReminderSettings) {
+        try {
+            val coordinator = SchedulingCoordinator(context)
+            val schedulingInfo = coordinator.scheduleTask(reminder)
+            Log.d("REMINDER_WORKER", "Rescheduled: $schedulingInfo")
+        } catch (e: Exception) {
+            Log.e("REMINDER_WORKER", "Failed to reschedule", e)
+        }
     }
 
     /**
@@ -265,5 +287,144 @@ class ReminderWorker(
 
     companion object {
         const val CHANNEL_ID = "task_reminders"
+
+        /**
+         * Show notification from ML check worker
+         * Static function so MLCheckWorker can call it
+         */
+        fun showNotificationFromML(
+            context: Context,
+            reminderId: Long,
+            title: String,
+            content: String
+        ) {
+            val notificationManager = context.getSystemService(
+                Context.NOTIFICATION_SERVICE
+            ) as NotificationManager
+
+            // Create channel (Android 8+)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = NotificationChannel(
+                    CHANNEL_ID,
+                    "Task Reminders",
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Notifications for scheduled tasks"
+                    enableVibration(true)
+                }
+                notificationManager.createNotificationChannel(channel)
+            }
+
+            // Build notification
+            val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle("📋 $title")
+                .setContentText(content)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(false)
+                .setContentIntent(createOpenAppIntent(context, reminderId))
+                .setDeleteIntent(createDeleteIntent(context, reminderId))
+                .addAction(createCompleteAction(context, reminderId))
+                .addAction(createSnoozeAction(context, reminderId))
+                .addAction(createDismissAction(context, reminderId))
+                .setVibrate(longArrayOf(0, 500, 200, 500))
+                .build()
+
+            notificationManager.notify(reminderId.toInt(), notification)
+        }
+
+        // Also make these helper functions static
+        private fun createOpenAppIntent(context: Context, reminderId: Long): PendingIntent {
+            val intent = Intent(context, com.example.caresync.MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra("reminderId", reminderId)
+            }
+            return PendingIntent.getActivity(
+                context,
+                reminderId.toInt(),
+                intent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+        }
+
+        private fun createCompleteAction(context: Context, reminderId: Long): NotificationCompat.Action {
+            val intent = Intent(context, CompleteTaskReceiver::class.java).apply {
+                putExtra("reminderId", reminderId)
+            }
+            val pendingIntent = PendingIntent.getBroadcast(
+                context,
+                (reminderId * 10 + 1).toInt(),
+                intent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            return NotificationCompat.Action(0, "✓ Complete", pendingIntent)
+        }
+
+        private fun createSnoozeAction(context: Context, reminderId: Long): NotificationCompat.Action {
+            val intent = Intent(context, SnoozeTaskReceiver::class.java).apply {
+                putExtra("reminderId", reminderId)
+            }
+            val pendingIntent = PendingIntent.getBroadcast(
+                context,
+                (reminderId * 10 + 2).toInt(),
+                intent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            return NotificationCompat.Action(0, "⏰ Snooze", pendingIntent)
+        }
+
+        private fun createDismissAction(context: Context, reminderId: Long): NotificationCompat.Action {
+            val intent = Intent(context, DismissTaskReceiver::class.java).apply {
+                putExtra("reminderId", reminderId)
+            }
+            val pendingIntent = PendingIntent.getBroadcast(
+                context,
+                (reminderId * 10 + 3).toInt(),
+                intent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            return NotificationCompat.Action(0, "✕ Dismiss", pendingIntent)
+        }
+
+        private fun createDeleteIntent(context: Context, reminderId: Long): PendingIntent {
+            val intent = Intent(context, NotificationDeletedReceiver::class.java).apply {
+                putExtra("reminderId", reminderId)
+            }
+            return PendingIntent.getBroadcast(
+                context,
+                (reminderId * 10 + 4).toInt(),
+                intent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+        }
+    }
+
+    /**
+     * Check if this notification is from a snooze
+     * (Check if last event was SNOOZED within reasonable time)
+     */
+    private suspend fun checkIfSnoozed(reminderId: Long): Boolean {
+        return try {
+            val eventDao = AppDatabase.get(context).reminderEventDao()
+            val fiveMinutesAgo = System.currentTimeMillis() - 5 * 60 * 1000L
+            val recentEvents = eventDao.getEventsBetween(
+                reminderId,
+                fiveMinutesAgo,
+                System.currentTimeMillis()
+            )
+
+            // If last event was SNOOZED, this is a snoozed notification
+            val lastEvent = recentEvents.maxByOrNull { it.timestamp }
+            val isSnoozed = lastEvent?.eventType == EventTypes.SNOOZED
+
+            if (isSnoozed) {
+                Log.d("REMINDER_WORKER", "✅ Detected snoozed notification (last event: SNOOZED)")
+            }
+
+            isSnoozed
+        } catch (e: Exception) {
+            Log.e("REMINDER_WORKER", "Failed to check snooze status", e)
+            false  // Default to not snoozed if check fails
+        }
     }
 }

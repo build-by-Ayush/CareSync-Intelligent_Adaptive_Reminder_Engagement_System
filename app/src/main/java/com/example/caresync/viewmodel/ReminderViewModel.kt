@@ -2,12 +2,13 @@ package com.example.caresync.viewmodel
 
 import android.app.Application
 import android.content.Context
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.caresync.data.ReminderRepository
 import com.example.caresync.domain.ReminderSettings
-import com.example.caresync.scheduler.NotificationScheduler
-import com.example.caresync.scheduler.NotificationSchedulerImpl
+import com.example.caresync.scheduler.TaskConfigurationEngine  // ✅ NEW IMPORT
+import com.example.caresync.scheduler.ConfigurationResult      // ✅ NEW IMPORT
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -17,7 +18,7 @@ import kotlinx.coroutines.launch
 class ReminderViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repo = ReminderRepository(application)
-    private val scheduler: NotificationScheduler = NotificationSchedulerImpl()
+    private val engine = TaskConfigurationEngine(application)  // ✅ NEW: Use engine instead of scheduler
 
     // All reminders - directly expose ReminderSettings
     val reminders: StateFlow<List<ReminderSettings>> =
@@ -54,17 +55,36 @@ class ReminderViewModel(application: Application) : AndroidViewModel(application
             updatedAt = now,
             createdAt = _editState.value.createdAt.takeIf { it > 0 } ?: now
         )
-        val id = repo.upsert(current)
-        val saved = current.copy(id = if (current.id == 0L) id else current.id)
-        scheduler.scheduleReminder(context, saved)
+
+        // ✅ NEW: Use TaskConfigurationEngine instead of direct save + schedule
+        val result = engine.processTaskConfiguration(current)
+
+        when (result) {
+            is ConfigurationResult.Success -> {
+                Log.d("REMINDER_VM", "Task saved successfully: ${result.taskId}")
+                Log.d("REMINDER_VM", "Scheduling info: ${result.schedulingInfo}")
+
+                // Update edit state with new ID
+                _editState.value = current.copy(id = result.taskId)
+            }
+            is ConfigurationResult.ValidationError -> {
+                Log.e("REMINDER_VM", "Validation error: ${result.message}")
+                // TODO: Show error to user via UI state
+            }
+            is ConfigurationResult.Failure -> {
+                Log.e("REMINDER_VM", "Failed to save task: ${result.reason}")
+                // TODO: Show error to user via UI state
+            }
+        }
     }
 
     // Delete reminder
     fun delete(context: Context) = viewModelScope.launch {
         val id = _editState.value.id
         if (id > 0) {
-            repo.delete(id)
-            scheduler.cancelReminder(context, id)
+            // ✅ NEW: Use engine to cancel (handles WorkManager + database + logs)
+            engine.cancelTaskConfiguration(id)
+            Log.d("REMINDER_VM", "Task deleted: $id")
         }
     }
 

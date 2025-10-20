@@ -1,6 +1,7 @@
 package com.example.caresync.data
 
 import android.content.Context
+import android.util.Log
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
@@ -8,13 +9,18 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
-    entities = [ReminderEntity::class, ReminderEventEntity::class],
-    version = 3,  // ← Incremented from 2 to 3
+    entities = [
+        ReminderEntity::class,
+        ReminderEventEntity::class,
+        BlacklistHour::class
+    ],
+    version = 9,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun reminderDao(): ReminderDao
     abstract fun reminderEventDao(): ReminderEventDao
+    abstract fun blacklistHourDao(): BlacklistHourDao
 
     companion object {
         @Volatile private var INSTANCE: AppDatabase? = null
@@ -26,8 +32,8 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "caresync.db"
                 )
-                    .addMigrations(MIGRATION_2_3)  // ← Add migration instead of destructive fallback
-                    .fallbackToDestructiveMigration()  // ← Keep as last resort for unknown migrations
+                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+                    .fallbackToDestructiveMigration()
                     .build().also { INSTANCE = it }
             }
 
@@ -71,6 +77,113 @@ abstract class AppDatabase : RoomDatabase() {
                 database.execSQL("CREATE INDEX IF NOT EXISTS index_reminder_events_timestamp ON reminder_events(timestamp)")
                 database.execSQL("CREATE INDEX IF NOT EXISTS index_reminder_events_eventType ON reminder_events(eventType)")
                 database.execSQL("CREATE INDEX IF NOT EXISTS index_reminder_events_reminderId_timestamp ON reminder_events(reminderId, timestamp)")
+            }
+        }
+
+        // ==========================================
+        // MIGRATION FROM VERSION 3 TO 4
+        // Adds blacklist_hours table
+        // ==========================================
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Create blacklist_hours table
+                database.execSQL("""
+                    CREATE TABLE IF NOT EXISTS blacklist_hours (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        reminderId INTEGER NOT NULL,
+                        hourOfDay INTEGER NOT NULL,
+                        dismissalCount INTEGER NOT NULL,
+                        lastDismissalTimestamp INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        FOREIGN KEY(reminderId) REFERENCES reminders(id) ON DELETE CASCADE
+                    )
+                """)
+
+                // Create unique index
+                database.execSQL("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS index_blacklist_hours_reminderId_hourOfDay 
+                    ON blacklist_hours(reminderId, hourOfDay)
+                """)
+            }
+        }
+
+        // ==========================================
+        // ✅ NEW: MIGRATION FROM VERSION 4 TO 5
+        // Adds snoozeDurationMinutes to reminders table
+        // ==========================================
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Add snoozeDurationMinutes column to reminders table
+                // Default is 10 minutes for existing reminders
+                database.execSQL(
+                    "ALTER TABLE reminders ADD COLUMN snoozeDurationMinutes INTEGER NOT NULL DEFAULT 10"
+                )
+            }
+        }
+
+        // ✅ NEW: Migration 5 → 6 (Add CASCADE to blacklist_hours)
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Recreate blacklist_hours table with CASCADE
+
+                // Step 1: Create temporary table with CASCADE
+                database.execSQL("""
+            CREATE TABLE IF NOT EXISTS blacklist_hours_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                reminderId INTEGER NOT NULL,
+                hourOfDay INTEGER NOT NULL,
+                dismissalCount INTEGER NOT NULL,
+                lastDismissalTimestamp INTEGER NOT NULL,
+                createdAt INTEGER NOT NULL,
+                FOREIGN KEY(reminderId) REFERENCES reminders(id) ON DELETE CASCADE
+            )
+        """)
+
+                // Step 2: Copy existing data (if any)
+                database.execSQL("""
+            INSERT INTO blacklist_hours_new 
+            SELECT * FROM blacklist_hours
+        """)
+
+                // Step 3: Drop old table
+                database.execSQL("DROP TABLE IF EXISTS blacklist_hours")
+
+                // Step 4: Rename new table
+                database.execSQL("ALTER TABLE blacklist_hours_new RENAME TO blacklist_hours")
+
+                // Step 5: Recreate index
+                database.execSQL("""
+            CREATE UNIQUE INDEX IF NOT EXISTS index_blacklist_hours_reminderId_hourOfDay 
+            ON blacklist_hours(reminderId, hourOfDay)
+        """)
+
+                Log.d("MIGRATION", "✅ Migration 5→6: Added CASCADE to blacklist_hours (preserving existing data)")
+            }
+        }
+
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE reminders ADD COLUMN boostModeActive INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE reminders ADD COLUMN boostModeEndTime INTEGER")
+                database.execSQL("ALTER TABLE reminders ADD COLUMN boostModeFrequency INTEGER NOT NULL DEFAULT 5")
+
+                Log.d("MIGRATION", "✅ Migration 6→7: Added Boost Mode fields")
+            }
+        }
+
+        private val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "ALTER TABLE reminders ADD COLUMN allowedTimePeriodsJson TEXT NOT NULL DEFAULT '[\"MORNING\",\"AFTERNOON\",\"EVENING\"]'"
+                )
+                Log.d("MIGRATION", "✅ Migration 7→8: Added time period restrictions")
+            }
+        }
+
+        private val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE reminders ADD COLUMN dueDate INTEGER")
+                Log.d("MIGRATION", "✅ Migration 8→9: Added due date field")
             }
         }
     }

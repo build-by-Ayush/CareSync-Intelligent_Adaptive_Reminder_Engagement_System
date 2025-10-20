@@ -9,6 +9,7 @@ import com.example.caresync.data.AppDatabase
 import com.example.caresync.data.ReminderRepository
 import com.example.caresync.domain.EventTypes
 import com.example.caresync.scheduler.NotificationSchedulerImpl
+import com.example.caresync.utils.SafeEventLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -18,33 +19,43 @@ class SnoozeTaskReceiver : BroadcastReceiver() {
         val reminderId = intent.getLongExtra("reminderId", -1L)
         if (reminderId == -1L) return
 
-        // Default snooze: 10 minutes
-        val snoozeDuration = 10
-
-        Log.d("REMINDER_EVENT", "⏰ SNOOZED: Task $reminderId for $snoozeDuration min")
-
         CoroutineScope(Dispatchers.IO).launch {
             val repo = ReminderRepository(context)
+            val reminder = repo.get(reminderId)
+
+            if (reminder == null) {
+                Log.w("SNOOZE", "⚠️ Task $reminderId no longer exists, ignoring snooze")
+                return@launch
+            }
+
+            val snoozeDuration = reminder.snoozeDurationMinutes
+            Log.d("REMINDER_EVENT", "⏰ SNOOZED: Task $reminderId for $snoozeDuration min")
+
             val eventDao = AppDatabase.get(context).reminderEventDao()
 
-            // ✅ GET CURRENT SNOOZE COUNT
-            val currentSnoozeCount = getSnoozeCountForThisNotification(eventDao, reminderId)
+            // Get snooze count
+            val currentSnoozeCount = try {
+                val oneHourAgo = System.currentTimeMillis() - 60 * 60 * 1000L
+                val events = eventDao.getEventsBetween(reminderId, oneHourAgo, System.currentTimeMillis())
+                val lastTriggeredIndex = events.indexOfLast { it.eventType == EventTypes.TRIGGERED }
+                if (lastTriggeredIndex >= 0) {
+                    events.drop(lastTriggeredIndex + 1).count { it.eventType == EventTypes.SNOOZED }
+                } else 0
+            } catch (e: Exception) {
+                0
+            }
 
-            // ✅ CREATE EVENT WITH CONTEXT
-            val event = createEventWithContext(
+            // ✅ SAFE LOGGING
+            val success = SafeEventLogger.logEvent(
+                context = context,
                 reminderId = reminderId,
                 eventType = EventTypes.SNOOZED,
-                context = context,
                 snoozeDurationMinutes = snoozeDuration,
-                snoozeCount = currentSnoozeCount + 1  // Increment for this snooze
+                snoozeCount = currentSnoozeCount + 1
             )
 
-            eventDao.insert(event)
-            Log.d("REMINDER_EVENT", "⏰ Logged SNOOZED (count=${currentSnoozeCount + 1})")
-
-            // Reschedule for snooze time
-            val reminder = repo.get(reminderId)
-            if (reminder != null) {
+            if (success) {
+                // Reschedule notification
                 val snoozedReminder = reminder.copy(
                     scheduledAtMillis = System.currentTimeMillis() + snoozeDuration * 60 * 1000
                 )
@@ -52,10 +63,11 @@ class SnoozeTaskReceiver : BroadcastReceiver() {
             }
         }
 
-        // Cancel current notification
+        // Cancel notification
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.cancel(reminderId.toInt())
     }
+
 
     /**
      * Count snoozes since last TRIGGERED

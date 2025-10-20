@@ -1,61 +1,41 @@
 package com.example.caresync
 
-import android.Manifest
+
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.foundation.background
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.animation.core.tween
-import androidx.compose.runtime.*
-import kotlinx.coroutines.delay
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInVertically
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.NavController
 import androidx.navigation.compose.rememberNavController
-import androidx.lifecycle.lifecycleScope
 import com.example.caresync.data.ProfileDataStore
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import android.content.pm.PackageManager  // ← ADD
-import android.os.Build  // ← ADD (if not already there)
-import androidx.core.app.ActivityCompat  // ← ADD
-
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         val profileDataStore = ProfileDataStore(this)
-
-        // ✅ REQUEST NOTIFICATION PERMISSION (Android 13+)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ActivityCompat.checkSelfPermission(
-                    this,
-                    Manifest.permission.POST_NOTIFICATIONS
-                ) != PackageManager.PERMISSION_GRANTED
-            ) {
-                ActivityCompat.requestPermissions(
-                    this,
-                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-                    100
-                )
-            }
-        }
 
         lifecycleScope.launch {
             val completed = profileDataStore.isProfileCompleted.first()
@@ -71,48 +51,42 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-
 @Composable
 fun WelcomePage(navController: NavController) {
-    // Animation visibility trigger
     var visible by remember { mutableStateOf(false) }
 
-    // Delay to start the animation
     LaunchedEffect(Unit) {
-        delay(300)  // optional: slight delay before animation
+        delay(300)
         visible = true
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // Background image
         Image(
-            painter = painterResource(id = R.drawable.welcomepage), // Make sure image is in res/drawable
+            painter = painterResource(id = R.drawable.welcomepage),
             contentDescription = "Welcome Background",
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()
         )
 
-        // Trigger state for animation
         var showImage by remember { mutableStateOf(false) }
 
         LaunchedEffect(Unit) {
-            delay(300) // Delay before showing the image
+            delay(300)
             showImage = true
         }
 
-        // Slide-in image
         AnimatedVisibility(
             visible = showImage,
             enter = slideInVertically(
                 initialOffsetY = { fullHeight -> -fullHeight },
-                animationSpec = tween(durationMillis = 1100) // ← controls slide speed
+                animationSpec = tween(durationMillis = 1100)
             ) + fadeIn(
-                animationSpec = tween(durationMillis = 1100) // ← controls fade speed
+                animationSpec = tween(durationMillis = 1100)
             ),
             modifier = Modifier.align(Alignment.TopCenter)
         ) {
             Image(
-                painter = painterResource(id = R.drawable.clock1), // replace with your image name
+                painter = painterResource(id = R.drawable.clock1),
                 contentDescription = "Top Header Image",
                 contentScale = ContentScale.FillWidth,
                 modifier = Modifier
@@ -121,7 +95,6 @@ fun WelcomePage(navController: NavController) {
             )
         }
 
-        // Animated Button
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -157,9 +130,9 @@ fun WelcomePage(navController: NavController) {
                             .background(
                                 brush = Brush.horizontalGradient(
                                     colors = listOf(
-                                        Color(0xFFA8016D),  // left
-                                        Color(0xFF8E0177),  // middle
-                                        Color(0xFF750182)   // right
+                                        Color(0xFFA8016D),
+                                        Color(0xFF8E0177),
+                                        Color(0xFF750182)
                                     )
                                 ),
                                 shape = RoundedCornerShape(20.dp)

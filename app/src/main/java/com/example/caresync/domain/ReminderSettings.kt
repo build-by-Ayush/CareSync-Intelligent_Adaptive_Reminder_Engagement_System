@@ -48,9 +48,24 @@ data class ReminderSettings(
     // snooze / escalation
     val snoozeOptions: List<Int> = listOf(5, 10, 30),
     val maxSnoozes: Int = 3,
+    val snoozeDurationMinutes: Int = 10,  // ✅ NEW: How long to snooze
+
     val escalationPolicy: EscalationPolicy? = null,
 
     // audit
     val createdAt: Long = System.currentTimeMillis(),
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+
+    // ✅ ADD THESE 3 LINES:
+    val boostModeActive: Boolean = false,
+    val boostModeEndTime: Long? = null,
+    val boostModeFrequency: Int = 5,
+
+    val allowedTimePeriods: List<TimePeriod> = listOf(
+        TimePeriod.MORNING,
+        TimePeriod.AFTERNOON,
+        TimePeriod.EVENING
+    ),
+
+    val dueDate: Long? = null
 )

@@ -9,6 +9,7 @@ import com.example.caresync.data.AppDatabase
 import com.example.caresync.data.ReminderEventEntity
 import com.example.caresync.data.ReminderRepository
 import com.example.caresync.domain.EventTypes
+import com.example.caresync.utils.SafeEventLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -22,26 +23,44 @@ class CompleteTaskReceiver : BroadcastReceiver() {
         Log.d("REMINDER_EVENT", "✓ COMPLETED: Task $reminderId")
 
         CoroutineScope(Dispatchers.IO).launch {
-            val repo = ReminderRepository(context)
             val eventDao = AppDatabase.get(context).reminderEventDao()
 
-            // ✅ CALCULATE RESPONSE TIME
-            val responseTime = calculateResponseTime(eventDao, reminderId)
+            // Calculate response time
+            val responseTime = try {
+                val oneHourAgo = System.currentTimeMillis() - 60 * 60 * 1000L
+                val events = eventDao.getEventsBetween(reminderId, oneHourAgo, System.currentTimeMillis())
+                val lastTriggered = events.lastOrNull { it.eventType == EventTypes.TRIGGERED }
+                if (lastTriggered != null) {
+                    System.currentTimeMillis() - lastTriggered.timestamp
+                } else null
+            } catch (e: Exception) {
+                null
+            }
 
-            // ✅ GET SNOOZE COUNT
-            val snoozeCount = getSnoozeCountForThisNotification(eventDao, reminderId)
+            // Get snooze count
+            val snoozeCount = try {
+                val oneHourAgo = System.currentTimeMillis() - 60 * 60 * 1000L
+                val events = eventDao.getEventsBetween(reminderId, oneHourAgo, System.currentTimeMillis())
+                val lastTriggeredIndex = events.indexOfLast { it.eventType == EventTypes.TRIGGERED }
+                if (lastTriggeredIndex >= 0) {
+                    events.drop(lastTriggeredIndex + 1).count { it.eventType == EventTypes.SNOOZED }
+                } else 0
+            } catch (e: Exception) {
+                0
+            }
 
-            // ✅ CREATE EVENT WITH RICH CONTEXT
-            val event = createEventWithContext(
+            // ✅ SAFE LOGGING
+            val success = SafeEventLogger.logEvent(
+                context = context,
                 reminderId = reminderId,
                 eventType = EventTypes.COMPLETED,
-                context = context,
                 responseTimeMillis = responseTime,
                 snoozeCount = snoozeCount
             )
 
-            eventDao.insert(event)
-            Log.d("REMINDER_EVENT", "✓ Logged COMPLETED with responseTime=$responseTime ms, snoozeCount=$snoozeCount")
+            if (success) {
+                Log.d("REMINDER_EVENT", "✓ Logged COMPLETED with responseTime=$responseTime ms")
+            }
         }
 
         // Cancel notification

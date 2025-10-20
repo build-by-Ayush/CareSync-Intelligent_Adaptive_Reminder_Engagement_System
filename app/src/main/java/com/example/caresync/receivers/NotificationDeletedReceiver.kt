@@ -6,6 +6,7 @@ import android.content.Intent
 import android.util.Log
 import com.example.caresync.data.AppDatabase
 import com.example.caresync.domain.EventTypes
+import com.example.caresync.utils.SafeEventLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -18,21 +19,12 @@ class NotificationDeletedReceiver : BroadcastReceiver() {
         Log.d("REMINDER_EVENT", "👋 IGNORED: Task $reminderId (swiped away)")
 
         CoroutineScope(Dispatchers.IO).launch {
-            val eventDao = AppDatabase.get(context).reminderEventDao()
-
-            // ✅ GET SNOOZE COUNT
-            val snoozeCount = getSnoozeCountForThisNotification(eventDao, reminderId)
-
-            // ✅ CREATE EVENT WITH CONTEXT
-            val event = createEventWithContext(
-                reminderId = reminderId,
-                eventType = EventTypes.IGNORED,
+            // ✅ SAFE LOGGING
+            SafeEventLogger.logEvent(
                 context = context,
-                snoozeCount = snoozeCount
+                reminderId = reminderId,
+                eventType = EventTypes.IGNORED
             )
-
-            eventDao.insert(event)
-            Log.d("REMINDER_EVENT", "👋 Logged IGNORED (snoozeCount=$snoozeCount)")
         }
     }
 

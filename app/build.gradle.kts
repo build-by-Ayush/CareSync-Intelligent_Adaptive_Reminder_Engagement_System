@@ -83,4 +83,10 @@ dependencies {
 
     // WorkManager
     implementation("androidx.work:work-runtime-ktx:2.9.1")
+
+    // ONNX Runtime for Android
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.16.3")
+
+    // Fuzzy matching for app name normalization
+    implementation("me.xdrop:fuzzywuzzy:1.4.0")
 }

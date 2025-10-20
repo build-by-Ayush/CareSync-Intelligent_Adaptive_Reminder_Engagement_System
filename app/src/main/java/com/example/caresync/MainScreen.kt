@@ -48,6 +48,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import android.content.Intent
 import android.graphics.drawable.Drawable
+import android.util.Log
 import androidx.compose.foundation.border
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -68,6 +69,16 @@ import com.example.caresync.domain.NotifyMethod
 import java.util.Calendar
 import com.example.caresync.domain.RecurrenceType
 import com.example.caresync.domain.IntervalUnit
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.window.Dialog
+import androidx.compose.foundation.border
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.rememberDatePickerState
+import androidx.compose.material3.DatePickerDefaults
+import java.text.SimpleDateFormat
+import java.util.*
 
 
 @Composable
@@ -415,6 +426,15 @@ fun TaskSettingBottomSheet(
         )
     }
 
+    val scope = rememberCoroutineScope()
+
+    var selectedTimePeriods by remember(task) {
+        mutableStateOf(
+            task?.allowedTimePeriods?.map { it.name }?.toSet()
+                ?: setOf("MORNING", "AFTERNOON", "EVENING")
+        )
+    }
+
     var selectedMode by remember(task) {
         mutableStateOf(
             when (task?.triggerMode) {
@@ -472,6 +492,24 @@ fun TaskSettingBottomSheet(
     var showAppPicker by remember { mutableStateOf(false) }
     var selectedTone by remember(task) { mutableStateOf(task?.toneUri ?: "Default") }
     var toneExpanded by remember { mutableStateOf(false) }
+    var selectedSnoozeDuration by remember(task) {
+        mutableIntStateOf(task?.snoozeDurationMinutes ?: 10)
+    }  // ✅ NEW: Store selected snooze minutes
+
+    // ✅ NEW: Boost Mode states
+    var showBoostDialog by remember { mutableStateOf(false) }
+    var boostDurationHours by remember(task) {
+        mutableIntStateOf(if (task?.boostModeActive == true) {
+            val remaining = (task.boostModeEndTime ?: 0L) - System.currentTimeMillis()
+            (remaining / (60 * 60 * 1000)).toInt().coerceAtLeast(1)
+        } else 2)
+    }
+    var boostFrequency by remember(task) {
+        mutableIntStateOf(task?.boostModeFrequency ?: 5)
+    }
+    var isBoostActive by remember(task) {
+        mutableStateOf(task?.boostModeActive == true)
+    }
 
     var selectedUnit by remember(task) {
         mutableStateOf(
@@ -517,6 +555,9 @@ fun TaskSettingBottomSheet(
             }
         )
     }
+
+    var showDatePicker by remember { mutableStateOf(false) }
+    var selectedDueDate by remember(task) { mutableStateOf(task?.dueDate) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -643,6 +684,17 @@ fun TaskSettingBottomSheet(
                                         // App target
                                         targetAppPackage = selectedApp?.packageName,
 
+                                        // Snooze duration
+                                        snoozeDurationMinutes = selectedSnoozeDuration,  // ✅ NEW: Save user choice
+
+                                        // ✅ ADD THIS LINE
+                                        allowedTimePeriods = selectedTimePeriods.mapNotNull {
+                                            try {
+                                                com.example.caresync.domain.TimePeriod.valueOf(it)
+                                            } catch (e: Exception) {
+                                                null
+                                            }
+                                        },
                                         // Timestamp
                                         updatedAt = System.currentTimeMillis()
                                     )
@@ -721,7 +773,7 @@ fun TaskSettingBottomSheet(
                         Button(
                             onClick = { selectedMode = mode },
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isSelected) Color(0xFF262131) else Color(0xFF3E3951),
+                                containerColor = if (isSelected) Color(0xFF560154) else Color(0xFF3E3951),
                                 contentColor = Color.White
                             ),
                             shape = RoundedCornerShape(12.dp),
@@ -746,7 +798,13 @@ fun TaskSettingBottomSheet(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         // ... your existing Model mode content (dropdown + counter) ...
-                        val units = listOf("Per Hours", "Per Days", "Per Week")
+                        // ✅ UPDATED: Unit dropdown - no "Per Hours" in Model Mode
+                        val units = if (selectedMode == "Model") {
+                            listOf("Per Days", "Per Week")  // Model Mode: Only day/week options
+                        } else {
+                            listOf("Per Hours", "Per Days", "Per Week")  // Repetitive Mode: All options
+                        }
+
                         var expanded by remember { mutableStateOf(false) }
 
                         Box {
@@ -783,7 +841,7 @@ fun TaskSettingBottomSheet(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
                                 .background(Color(0xFF3E3951), RoundedCornerShape(50))
-                                .padding(horizontal = 20.dp, vertical = 3.dp)
+                                .padding(horizontal = 18.dp, vertical = 3.dp)
                         ) {
                             IconButton(onClick = { if (minOccurrenceCount > 1) minOccurrenceCount-- }, modifier = Modifier.size(30.dp)) {
                                 Icon(Icons.Filled.Remove, contentDescription = "Decrease", tint = Color.White)
@@ -796,6 +854,7 @@ fun TaskSettingBottomSheet(
                     }
 
                 } else if (selectedMode == "Repetitive") {
+
                     // -------------------- REPETITIVE MODE --------------------
                     // ... your existing Repetitive mode content (recurrence dropdown + pickers) ...
                     val recurrenceOptions = listOf("Hours", "Days", "Weekdays")
@@ -941,8 +1000,289 @@ fun TaskSettingBottomSheet(
                     }
                 }
 
-                // ✅ MOVE THESE THREE SECTIONS OUTSIDE THE if/else BLOCK
-                // They should appear regardless of Model or Repetitive mode
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // ✅ NEW: Time of Day Preference (show in Model, Days, Weekdays - NOT in Hours)
+                if (selectedMode == "Model" || (selectedMode == "Repetitive" && recurrenceType in listOf("Days", "Weekdays"))) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                    ) {
+                        Text(
+                            "Notification Time Periods",
+                            color = Color.White,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // ✅ 3 Period Buttons (only labels)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly
+                        ) {
+                            listOf(
+                                "MORNING" to "Morning",
+                                "AFTERNOON" to "Afternoon",
+                                "EVENING" to "Evening"
+                            ).forEach { (key, label) ->
+                                val isSelected = selectedTimePeriods.contains(key)
+
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(horizontal = 4.dp)
+                                        .background(
+                                            if (isSelected) Color(0xFF560154) else Color(0xFF221F2C),
+                                            RoundedCornerShape(8.dp)
+                                        )
+                                        .border(
+                                            1.dp,
+                                            if (isSelected) Color(0xFF560154) else Color(0xFF555555),
+                                            RoundedCornerShape(8.dp)
+                                        )
+                                        .clickable {
+                                            selectedTimePeriods = if (isSelected) {
+                                                if (selectedTimePeriods.size > 1) {
+                                                    selectedTimePeriods - key
+                                                } else {
+                                                    selectedTimePeriods
+                                                }
+                                            } else {
+                                                selectedTimePeriods + key
+                                            }
+                                        }
+                                        .padding(vertical = 12.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        label,
+                                        color = Color.White,
+                                        fontSize = 14.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                }
+                            }
+                        }
+
+                        // ✅ Warning if trying to deselect all
+                        if (selectedTimePeriods.isEmpty()) {
+                            Text(
+                                "⚠️ At least one time period must be selected",
+                                color = Color.Red,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(top = 8.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(24.dp))
+                }
+
+                // ✅ NEW: Snooze Duration Selector (Option B - Segmented Control)
+                Text(
+                    text = "Snooze Duration",
+                    color = Color.White,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Medium
+                )
+
+                // Segmented Control Container
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF221F2C), RoundedCornerShape(12.dp))
+                        .padding(4.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    val snoozeOptions = listOf(5, 10, 15, 30, 60)
+
+                    snoozeOptions.forEach { minutes ->
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 2.dp)
+                                .background(
+                                    color = if (selectedSnoozeDuration == minutes)
+                                        Color(0xFF560154)  // Purple when selected
+                                    else
+                                        Color.Transparent,
+                                    shape = RoundedCornerShape(8.dp)
+                                )
+                                .clickable { selectedSnoozeDuration = minutes }
+                                .padding(vertical = 12.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = minutes.toString(),
+                                color = Color.White,
+                                fontSize = 16.sp,
+                                fontWeight = if (selectedSnoozeDuration == minutes)
+                                    FontWeight.Bold
+                                else
+                                    FontWeight.Normal
+                            )
+                        }
+                    }
+                }
+
+                // "Minutes" label below buttons
+                Text(
+                    text = "Minutes",
+                    color = Color(0xFFAAAAAA),
+                    fontSize = 12.sp,
+                    modifier = Modifier
+                        .padding(top = 4.dp)
+                        .fillMaxWidth(),
+                    textAlign = TextAlign.Center
+                )
+
+                // ✅ Boost Mode Card - Only show for EXISTING tasks
+                if (task != null && task.id > 0) {
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isBoostActive) Color(0xFF4CAF50) else Color(0xFF221F2C)
+                        ),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text(
+                                        text = "⚡ Boost Mode",
+                                        color = Color.White,
+                                        fontSize = 18.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = if (isBoostActive)
+                                            "Active - Extra notifications firing"
+                                        else
+                                            "Add temporary intensive notifications",
+                                        color = Color(0xFFAAAAAA),
+                                        fontSize = 14.sp,
+                                        modifier = Modifier.padding(top = 4.dp)
+                                    )
+                                }
+
+                                Box(
+                                    modifier = Modifier
+                                        .size(12.dp)
+                                        .background(
+                                            if (isBoostActive) Color(0xFF4CAF50) else Color.Gray,
+                                            CircleShape
+                                        )
+                                )
+                            }
+
+                            if (!isBoostActive) {
+                                Text(
+                                    text = "Boost adds extra notifications ON TOP of your normal schedule",
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF888888),
+                                    modifier = Modifier.padding(top = 8.dp)
+                                )
+                            }
+
+                            if (isBoostActive) {
+                                Spacer(modifier = Modifier.height(12.dp))
+
+                                val remainingTime = remember(task) {
+                                    if (task.boostModeEndTime != null) {
+                                        val remaining = task.boostModeEndTime - System.currentTimeMillis()
+                                        if (remaining > 0) {
+                                            val hours = (remaining / (60 * 60 * 1000)).toInt()
+                                            val mins = ((remaining % (60 * 60 * 1000)) / (60 * 1000)).toInt()
+                                            "${hours}h ${mins}m remaining"
+                                        } else "Ending soon..."
+                                    } else "Active"
+                                }
+
+                                Text(
+                                    text = "⏱️ $remainingTime",
+                                    color = Color.White,
+                                    fontSize = 14.sp
+                                )
+
+                                Text(
+                                    text = "Frequency: ${task.boostModeFrequency} per hour (extra)",
+                                    color = Color(0xFFF8F8F8),
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.padding(top = 4.dp)
+                                )
+
+                                Text(
+                                    text = "Normal reminders: Still active ✓",
+                                    color = Color(0xDC4CAF50),
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
+
+                                Spacer(modifier = Modifier.height(12.dp))
+
+                                // ✅ FIXED STOP BUTTON
+                                Button(
+                                    onClick = {
+                                        com.example.caresync.scheduler.BoostModeScheduler.stopBoostMode(context, task.id)
+                                        isBoostActive = false
+
+                                        val updatedTask = task.copy(
+                                            boostModeActive = false,
+                                            boostModeEndTime = null
+                                        )
+                                        onSave(updatedTask)
+
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            "Boost stopped. Normal reminders continue.",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("STOP BOOST", color = Color.White, fontWeight = FontWeight.Bold)
+                                }
+
+                            } else {
+                                Spacer(modifier = Modifier.height(12.dp))
+
+                                Button(
+                                    onClick = { showBoostDialog = true },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF560154)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("START BOOST", color = Color.White, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "💡 Save the task first to enable Boost Mode",
+                        fontSize = 14.sp,
+                        color = Color(0xFFAAAAAA),
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
+                    )
+                }
+
                 Spacer(modifier = Modifier.height(24.dp))
 
                 // 🔹 Reminder Method Radio Buttons (COMMON TO BOTH MODES)
@@ -1025,6 +1365,74 @@ fun TaskSettingBottomSheet(
                                 { Text("Please enter 10 digits", color = Color(0xFFFF6B6B), fontSize = 12.sp) }
                             } else null
                         )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // ✅ Due Date Calendar
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp)
+                ) {
+                    Text(
+                        "Due Date",
+                        color = Color.White,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Calendar button
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF221F2C), RoundedCornerShape(12.dp))
+                            .clickable { showDatePicker = true }
+                            .padding(16.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(
+                                    if (selectedDueDate != null) {
+                                        SimpleDateFormat("MMMM dd, yyyy", Locale.getDefault())
+                                            .format(Date(selectedDueDate!!))
+                                    } else {
+                                        "No due date set"
+                                    },
+                                    color = Color.White,
+                                    fontSize = 16.sp
+                                )
+
+                                if (selectedDueDate != null) {
+                                    val daysUntil = ((selectedDueDate!! - System.currentTimeMillis()) / (24 * 60 * 60 * 1000)).toInt()
+                                    Text(
+                                        when {
+                                            daysUntil < 0 -> "⚠️ Overdue by ${-daysUntil} days"
+                                            daysUntil == 0 -> "⏰ Due today!"
+                                            daysUntil == 1 -> "📅 Due tomorrow"
+                                            daysUntil <= 7 -> "📅 Due in $daysUntil days"
+                                            else -> "📅 $daysUntil days remaining"
+                                        },
+                                        color = when {
+                                            daysUntil < 0 -> Color(0xFFFF5252)
+                                            daysUntil <= 3 -> Color(0xFFFFA726)
+                                            else -> Color(0xFFAAAAAA)
+                                        },
+                                        fontSize = 12.sp,
+                                        modifier = Modifier.padding(top = 4.dp)
+                                    )
+                                }
+                            }
+
+                            Text("📅", fontSize = 24.sp)
+                        }
                     }
                 }
 
@@ -1144,6 +1552,192 @@ fun TaskSettingBottomSheet(
                     }
                 }
                 Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(24.dp))
+            }
+            // ✅ NEW: Boost Mode Configuration Dialog
+            if (showBoostDialog) {
+                Dialog(onDismissRequest = { showBoostDialog = false }) {
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = Color(0xFF221F2C)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(24.dp)
+                        ) {
+                            Text(
+                                text = "⚡ Configure Boost Mode",
+                                color = Color.White,
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            Text(
+                                text = "Duration (hours)",
+                                color = Color.White,
+                                fontSize = 16.sp
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                listOf(1, 2, 4, 8).forEach { hours ->
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .padding(4.dp)
+                                            .background(
+                                                if (boostDurationHours == hours) Color(0xFF560154) else Color(0xFF3E3951),
+                                                RoundedCornerShape(8.dp)
+                                            )
+                                            .clickable { boostDurationHours = hours }
+                                            .padding(vertical = 12.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = "${hours}h",
+                                            color = Color.White,
+                                            fontSize = 16.sp,
+                                            fontWeight = if (boostDurationHours == hours) FontWeight.Bold else FontWeight.Normal
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            Text(
+                                text = "Frequency: $boostFrequency per hour",
+                                color = Color.White,
+                                fontSize = 16.sp
+                            )
+
+                            Slider(
+                                value = boostFrequency.toFloat(),
+                                onValueChange = { boostFrequency = it.toInt() },
+                                valueRange = 5f..15f,
+                                steps = 9,
+                                colors = SliderDefaults.colors(
+                                    thumbColor = Color(0xFF560154),
+                                    activeTrackColor = Color(0xFF560154)
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            Text(
+                                text = "Total: ${boostDurationHours * boostFrequency} notifications",
+                                color = Color(0xFFAAAAAA),
+                                fontSize = 12.sp
+                            )
+
+                            Spacer(modifier = Modifier.height(24.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                TextButton(onClick = { showBoostDialog = false }) {
+                                    Text("Cancel", color = Color.White)
+                                }
+
+                                Button(
+                                    onClick = {
+                                        // Start boost mode
+                                        val updatedTask = (task ?: ReminderSettings(title = name)).copy(
+                                            boostModeActive = true,
+                                            boostModeEndTime = System.currentTimeMillis() + (boostDurationHours * 60 * 60 * 1000L),
+                                            boostModeFrequency = boostFrequency
+                                        )
+
+                                        // Save and start boost
+                                        onSave(updatedTask)
+                                        com.example.caresync.scheduler.BoostModeScheduler.startBoostMode(
+                                            context,
+                                            updatedTask,
+                                            boostDurationHours,
+                                            boostFrequency
+                                        )
+
+                                        isBoostActive = true
+                                        showBoostDialog = false
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF560154))
+                                ) {
+                                    Text("START", color = Color.White, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // ✅ Themed Calendar Picker Dialog
+            if (showDatePicker) {
+                val datePickerState = rememberDatePickerState(
+                    initialSelectedDateMillis = selectedDueDate ?: System.currentTimeMillis()
+                )
+
+                DatePickerDialog(
+                    onDismissRequest = { showDatePicker = false },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                selectedDueDate = datePickerState.selectedDateMillis
+                                showDatePicker = false
+                            }
+                        ) {
+                            Text("OK", color = Color(0xFF560154), fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showDatePicker = false }) {
+                            Text("Cancel", color = Color.Gray)
+                        }
+                    },
+                    colors = DatePickerDefaults.colors(
+                        containerColor = Color(0xFF1A1625),
+                        titleContentColor = Color.White,
+                        headlineContentColor = Color.White,
+                        weekdayContentColor = Color(0xFFAAAAAA),
+                        subheadContentColor = Color.White,
+                        yearContentColor = Color.White,
+                        currentYearContentColor = Color(0xFF560154),
+                        selectedYearContainerColor = Color(0xFF560154),
+                        selectedYearContentColor = Color.White,
+                        dayContentColor = Color.White,
+                        disabledDayContentColor = Color(0xFF555555),
+                        selectedDayContainerColor = Color(0xFF560154),
+                        selectedDayContentColor = Color.White,
+                        todayContentColor = Color(0xFF560154),
+                        todayDateBorderColor = Color(0xFF560154),
+                        dayInSelectionRangeContentColor = Color.White,
+                        dayInSelectionRangeContainerColor = Color(0xFF3E2A3D)
+                    )
+                ) {
+                    DatePicker(
+                        state = datePickerState,
+                        colors = DatePickerDefaults.colors(
+                            containerColor = Color(0xFF1A1625),
+                            titleContentColor = Color.White,
+                            headlineContentColor = Color.White,
+                            weekdayContentColor = Color(0xFFAAAAAA),
+                            subheadContentColor = Color.White,
+                            yearContentColor = Color.White,
+                            currentYearContentColor = Color(0xFF560154),
+                            selectedYearContainerColor = Color(0xFF560154),
+                            selectedYearContentColor = Color.White,
+                            dayContentColor = Color.White,
+                            selectedDayContainerColor = Color(0xFF560154),
+                            selectedDayContentColor = Color.White,
+                            todayContentColor = Color(0xFF560154),
+                            todayDateBorderColor = Color(0xFF560154)
+                        )
+                    )
+                }
             }
         }
     }

@@ -7,9 +7,11 @@ import android.content.Intent
 import android.util.Log
 import com.example.caresync.data.AppDatabase
 import com.example.caresync.domain.EventTypes
+import com.example.caresync.utils.SafeEventLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import java.util.Calendar
 
 class DismissTaskReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -20,20 +22,33 @@ class DismissTaskReceiver : BroadcastReceiver() {
 
         CoroutineScope(Dispatchers.IO).launch {
             val eventDao = AppDatabase.get(context).reminderEventDao()
+            val blacklistDao = AppDatabase.get(context).blacklistHourDao()
 
-            // ✅ GET SNOOZE COUNT
-            val snoozeCount = getSnoozeCountForThisNotification(eventDao, reminderId)
+            // Get snooze count
+            val snoozeCount = try {
+                val oneHourAgo = System.currentTimeMillis() - 60 * 60 * 1000L
+                val events = eventDao.getEventsBetween(reminderId, oneHourAgo, System.currentTimeMillis())
+                val lastTriggeredIndex = events.indexOfLast { it.eventType == EventTypes.TRIGGERED }
+                if (lastTriggeredIndex >= 0) {
+                    events.drop(lastTriggeredIndex + 1).count { it.eventType == EventTypes.SNOOZED }
+                } else 0
+            } catch (e: Exception) {
+                0
+            }
 
-            // ✅ CREATE EVENT WITH CONTEXT
-            val event = createEventWithContext(
+            // ✅ SAFE LOGGING
+            val success = SafeEventLogger.logEvent(
+                context = context,
                 reminderId = reminderId,
                 eventType = EventTypes.DISMISSED,
-                context = context,
                 snoozeCount = snoozeCount
             )
 
-            eventDao.insert(event)
-            Log.d("REMINDER_EVENT", "✕ Logged DISMISSED (snoozeCount=$snoozeCount)")
+            if (success) {
+                // Only update blacklist if event was logged (task still exists)
+                val currentHour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+                updateBlacklist(blacklistDao, reminderId, currentHour, System.currentTimeMillis())
+            }
         }
 
         // Cancel notification
@@ -115,4 +130,43 @@ class DismissTaskReceiver : BroadcastReceiver() {
             null
         }
     }
+    /**
+     * Update blacklist tracking for this hour
+     */
+    private suspend fun updateBlacklist(
+        blacklistDao: com.example.caresync.data.BlacklistHourDao,
+        reminderId: Long,
+        hourOfDay: Int,
+        timestamp: Long
+    ) {
+        try {
+            val existing = blacklistDao.getBlacklist(reminderId, hourOfDay)
+
+            if (existing == null) {
+                // First dismissal at this hour
+                blacklistDao.insert(
+                    com.example.caresync.data.BlacklistHour(
+                        reminderId = reminderId,
+                        hourOfDay = hourOfDay,
+                        dismissalCount = 1,
+                        lastDismissalTimestamp = timestamp
+                    )
+                )
+                Log.d("BLACKLIST", "📝 Started tracking hour $hourOfDay for task $reminderId (count: 1)")
+            } else {
+                // Increment existing
+                val updatedCount = blacklistDao.incrementDismissal(reminderId, hourOfDay, timestamp)
+                val newCount = existing.dismissalCount + 1
+
+                if (newCount >= 5) {
+                    Log.w("BLACKLIST", "⚠️ Hour $hourOfDay BLACKLISTED for task $reminderId ($newCount dismissals)")
+                } else {
+                    Log.d("BLACKLIST", "📝 Updated hour $hourOfDay for task $reminderId (count: $newCount)")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("BLACKLIST", "Failed to update blacklist", e)
+        }
+    }
+
 }

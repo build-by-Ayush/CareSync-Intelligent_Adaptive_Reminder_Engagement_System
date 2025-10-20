@@ -43,7 +43,17 @@ data class ReminderEntity(
     // snooze / escalation
     val snoozeOptionsJson: String = "[5,10,30]",
     val maxSnoozes: Int = 3,
+    val snoozeDurationMinutes: Int = 10,  // ✅ NEW: How long to snooze
     val escalationPolicyJson: String? = null,
+
+    // ✅ ADD THESE 3 LINES:
+    val boostModeActive: Boolean = false,
+    val boostModeEndTime: Long? = null,
+    val boostModeFrequency: Int = 5,
+
+    val allowedTimePeriodsJson: String = "[\"MORNING\",\"AFTERNOON\",\"EVENING\"]",
+
+    val dueDate: Long? = null,
 
     // audit
     val createdAt: Long = System.currentTimeMillis(),

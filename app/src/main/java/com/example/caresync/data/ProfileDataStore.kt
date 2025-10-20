@@ -16,6 +16,9 @@ class ProfileDataStore(private val context: Context) {
     private val AGE = stringPreferencesKey("age")
     private val PURPOSE = stringPreferencesKey("purpose")
 
+    // ✅ NEW: Track if permissions granted
+    private val PERMISSIONS_GRANTED = booleanPreferencesKey("permissions_granted")
+
     // ✅ Save profile data
     suspend fun saveProfile(username: String, age: String, purpose: String) {
         context.dataStore.edit { prefs ->
@@ -40,5 +43,18 @@ class ProfileDataStore(private val context: Context) {
     val isProfileCompleted: Flow<Boolean> =
         context.dataStore.data.map { prefs ->
             prefs[PROFILE_COMPLETED] ?: false
+        }
+
+    // ✅ NEW: Save permissions granted
+    suspend fun setPermissionsGranted() {
+        context.dataStore.edit { prefs ->
+            prefs[PERMISSIONS_GRANTED] = true
+        }
+    }
+
+    // ✅ NEW: Check if permissions granted
+    val arePermissionsGranted: Flow<Boolean> =
+        context.dataStore.data.map { prefs ->
+            prefs[PERMISSIONS_GRANTED] ?: false
         }
 }
