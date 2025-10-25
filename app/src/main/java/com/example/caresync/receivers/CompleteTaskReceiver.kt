@@ -5,9 +5,9 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import com.example.caresync.analytics.gamification.PointsCalculator
+import com.example.caresync.analytics.repository.AnalyticsRepository
 import com.example.caresync.data.AppDatabase
-import com.example.caresync.data.ReminderEventEntity
-import com.example.caresync.data.ReminderRepository
 import com.example.caresync.domain.EventTypes
 import com.example.caresync.utils.SafeEventLogger
 import kotlinx.coroutines.CoroutineScope
@@ -23,24 +23,45 @@ class CompleteTaskReceiver : BroadcastReceiver() {
         Log.d("REMINDER_EVENT", "✓ COMPLETED: Task $reminderId")
 
         CoroutineScope(Dispatchers.IO).launch {
-            val eventDao = AppDatabase.get(context).reminderEventDao()
+            val database = AppDatabase.get(context)
+            val eventDao = database.reminderEventDao()
+            val reminderDao = database.reminderDao()
+            val completionTime = System.currentTimeMillis()
 
-            // Calculate response time
-            val responseTime = try {
-                val oneHourAgo = System.currentTimeMillis() - 60 * 60 * 1000L
-                val events = eventDao.getEventsBetween(reminderId, oneHourAgo, System.currentTimeMillis())
-                val lastTriggered = events.lastOrNull { it.eventType == EventTypes.TRIGGERED }
-                if (lastTriggered != null) {
-                    System.currentTimeMillis() - lastTriggered.timestamp
-                } else null
-            } catch (e: Exception) {
-                null
+            // ✅ GET THE TASK (for priority)
+            val task = reminderDao.getById(reminderId)
+            if (task == null) {
+                Log.e("REMINDER_EVENT", "Task not found for ID $reminderId")
+                return@launch
             }
 
-            // Get snooze count
+            // ✅ GET NOTIFICATION SENT TIME (for points calculation)
+            val sentEvent = eventDao.getLastSentEventBeforeCompletion(
+                reminderId = reminderId,
+                completionTimestamp = completionTime
+            )
+
+// Calculate response time
+            val responseTime = if (sentEvent != null) {
+                completionTime - sentEvent.timestamp
+            } else {
+                // Fallback to old logic if no sent event found
+                try {
+                    val oneHourAgo = completionTime - 60 * 60 * 1000L
+                    val events = eventDao.getEventsBetween(reminderId, oneHourAgo, completionTime)
+                    val lastTriggered = events.lastOrNull { it.eventType == EventTypes.TRIGGERED }
+                    if (lastTriggered != null) {
+                        completionTime - lastTriggered.timestamp
+                    } else null
+                } catch (e: Exception) {
+                    null
+                }
+            }
+
+// Get snooze count (existing logic)
             val snoozeCount = try {
-                val oneHourAgo = System.currentTimeMillis() - 60 * 60 * 1000L
-                val events = eventDao.getEventsBetween(reminderId, oneHourAgo, System.currentTimeMillis())
+                val oneHourAgo = completionTime - 60 * 60 * 1000L
+                val events = eventDao.getEventsBetween(reminderId, oneHourAgo, completionTime)
                 val lastTriggeredIndex = events.indexOfLast { it.eventType == EventTypes.TRIGGERED }
                 if (lastTriggeredIndex >= 0) {
                     events.drop(lastTriggeredIndex + 1).count { it.eventType == EventTypes.SNOOZED }
@@ -49,17 +70,78 @@ class CompleteTaskReceiver : BroadcastReceiver() {
                 0
             }
 
-            // ✅ SAFE LOGGING
+            // ✅ GET TONE FROM TRIGGERED EVENT (not from task settings)
+            val toneUsed = sentEvent?.toneUsed ?: "AUTO"
+
+            // ✅ LOG COMPLETION EVENT WITH SAME TONE
             val success = SafeEventLogger.logEvent(
                 context = context,
                 reminderId = reminderId,
                 eventType = EventTypes.COMPLETED,
+                toneUsed = toneUsed,  // ← FIXED: Use tone from TRIGGERED event
                 responseTimeMillis = responseTime,
                 snoozeCount = snoozeCount
             )
 
             if (success) {
                 Log.d("REMINDER_EVENT", "✓ Logged COMPLETED with responseTime=$responseTime ms")
+            }
+
+            // ✅ CALCULATE POINTS & UPDATE DASHBOARD
+            try {
+                // ✅ CONVERT STRING PRIORITY TO ENUM
+                val priorityEnum = try {
+                    when (task.priority.uppercase()) {
+                        "CRITICAL" -> com.example.caresync.domain.Priority.CRITICAL
+                        "HIGH" -> com.example.caresync.domain.Priority.HIGH
+                        "NORMAL" -> com.example.caresync.domain.Priority.NORMAL
+                        "LOW" -> com.example.caresync.domain.Priority.LOW
+                        else -> com.example.caresync.domain.Priority.NORMAL  // Default
+                    }
+                } catch (e: Exception) {
+                    com.example.caresync.domain.Priority.NORMAL  // Safe fallback
+                }
+
+                val points = PointsCalculator.calculateTaskPoints(
+                    priority = priorityEnum,
+                    completedAt = completionTime,
+                    notificationSentAt = sentEvent?.timestamp
+                )
+
+                Log.d("GAMIFICATION", "Earned $points points for task $reminderId (priority: $priorityEnum)")
+
+                // ✅ UPDATE USER PROGRESS
+                val analyticsDao = database.analyticsDao()
+                val achievementEngine = com.example.caresync.analytics.gamification.AchievementEngine(
+                    analyticsDao = analyticsDao,
+                    reminderEventDao = eventDao
+                )
+
+                val repository = AnalyticsRepository(
+                    analyticsDao = analyticsDao,
+                    reminderEventDao = eventDao,
+                    reminderDao = reminderDao,
+                    achievementEngine = achievementEngine
+                )
+
+                repository.updateUserProgress(
+                    taskCompleted = true,
+                    pointsEarned = points
+                )
+
+                Log.d("GAMIFICATION", "✓ Updated user progress with $points points")
+
+                // Check for achievement unlocks
+                val newUnlocks = achievementEngine.checkAndUnlockAchievements()
+                if (newUnlocks.isNotEmpty()) {
+                    Log.d("GAMIFICATION", "🏆 Unlocked ${newUnlocks.size} achievements!")
+                    newUnlocks.forEach {
+                        Log.d("GAMIFICATION", "  - ${it.name} ${it.icon}")
+                    }
+                }
+
+            } catch (e: Exception) {
+                Log.e("GAMIFICATION", "Error updating progress: ${e.message}", e)
             }
         }
 
@@ -107,45 +189,6 @@ class CompleteTaskReceiver : BroadcastReceiver() {
         } catch (e: Exception) {
             0
         }
-    }
-
-    /**
-     * Create event with all context fields populated
-     */
-    private fun createEventWithContext(
-        reminderId: Long,
-        eventType: String,
-        context: Context,
-        responseTimeMillis: Long? = null,
-        snoozeDurationMinutes: Int? = null,
-        snoozeCount: Int = 0
-    ): com.example.caresync.data.ReminderEventEntity {
-        val now = java.util.Calendar.getInstance()
-
-        return com.example.caresync.data.ReminderEventEntity(
-            reminderId = reminderId,
-            eventType = eventType,
-            timestamp = System.currentTimeMillis(),
-
-            // Time context
-            hourOfDay = now.get(java.util.Calendar.HOUR_OF_DAY),
-            dayOfWeek = now.get(java.util.Calendar.DAY_OF_WEEK) - 1,
-            isWeekend = now.get(java.util.Calendar.DAY_OF_WEEK) in listOf(
-                java.util.Calendar.SATURDAY,
-                java.util.Calendar.SUNDAY
-            ),
-
-            // User behavior
-            responseTimeMillis = responseTimeMillis,
-            snoozeDurationMinutes = snoozeDurationMinutes,
-            snoozeCount = snoozeCount,
-
-            // Device context (basic)
-            batteryLevel = getBatteryLevel(context),
-
-            // Trigger source
-            triggerSource = "USER_ACTION"
-        )
     }
 
     /**

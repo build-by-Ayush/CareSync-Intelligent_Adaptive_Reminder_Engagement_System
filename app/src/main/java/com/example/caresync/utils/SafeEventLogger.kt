@@ -23,6 +23,7 @@ object SafeEventLogger {
         context: Context,
         reminderId: Long,
         eventType: String,
+        toneUsed: String? = null,  // ← ADD THIS PARAMETER
         responseTimeMillis: Long? = null,
         snoozeDurationMinutes: Int? = null,
         snoozeCount: Int = 0,
@@ -61,13 +62,16 @@ object SafeEventLogger {
                 // Device context
                 batteryLevel = getBatteryLevel(context),
 
+                // ✅ NEW: Tone tracking
+                toneUsed = toneUsed,  // ← ADD THIS
+
                 // Metadata
                 metadataJson = metadataJson,
                 triggerSource = "USER_ACTION"
             )
 
             db.reminderEventDao().insert(event)
-            Log.d(TAG, "✅ Logged $eventType for task $reminderId")
+            Log.d(TAG, "✅ Logged $eventType for task $reminderId (tone: $toneUsed)")
             true
 
         } catch (e: SQLiteConstraintException) {

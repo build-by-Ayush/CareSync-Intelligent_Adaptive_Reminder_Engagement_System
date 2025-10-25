@@ -76,7 +76,7 @@ data class ReminderEntity(
             entity = ReminderEntity::class,
             parentColumns = ["id"],
             childColumns = ["reminderId"],
-            onDelete = ForeignKey.CASCADE  // Auto-delete events when task deleted
+            onDelete = ForeignKey.NO_ACTION  // Auto-delete events when task deleted
         )
     ]
 )

@@ -73,10 +73,11 @@ import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.DatePickerDefaults
 import java.text.SimpleDateFormat
 import java.util.*
+import androidx.navigation.NavHostController
 
 
 @Composable
-fun AppWithDrawer() {
+fun AppWithDrawer(navController: NavHostController)  {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
@@ -106,6 +107,7 @@ fun AppWithDrawer() {
             username = username,
             age = age,
             purpose = purpose,
+            navController = navController,  // ← PASS IT HERE
             openDrawer = {
                 scope.launch { drawerState.open() }
             }
@@ -119,6 +121,7 @@ fun MainScreen(
     username: String,
     age: String,
     purpose: String,
+    navController: NavHostController,  // ← ADD THIS PARAMETER
     openDrawer: () -> Unit
 ) {
     val vm: ReminderViewModel = viewModel()
@@ -132,7 +135,7 @@ fun MainScreen(
     Box(modifier = Modifier.fillMaxSize()) {
         // ✅ Background image
         Image(
-            painter = painterResource(id = R.drawable.mainpage), // your real image
+            painter = painterResource(id = R.drawable.mainpage),
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()
@@ -144,53 +147,103 @@ fun MainScreen(
                 .fillMaxSize()
                 .padding(16.dp)
         ) {
-            // Top bar: icon left, username right
+            // ✅✅✅ MODIFIED TOP BAR WITH DASHBOARD ICON ✅✅✅
             Row(
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
                     .padding(top = 15.dp),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically  // ← ADD THIS
             ) {
-                // Icon Button
+                // Menu Icon Button (Left)
                 IconButton(onClick = openDrawer) {
                     Image(
-                        painter = painterResource(id = R.drawable.menuicon), // your side menu icon image
+                        painter = painterResource(id = R.drawable.menuicon),
                         contentDescription = "Menu",
                         modifier = Modifier.size(32.dp)
                     )
                 }
 
-                // Username text
-                Text(
-                    text = "Hey!\n$username",
-                    fontSize = 24.sp,
-                    color = Color.White,
-                    fontFamily = FontFamily.Default, // Replace with custom font if needed
-                    textAlign = TextAlign.Right
-                )
+                // ✅ RIGHT SIDE: Level Badge + Dashboard Icon
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // ✅ Custom Dashboard Icon Image
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)  // Touch target size
+                            .clickable { navController.navigate("analytics") },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.dashboard),
+                            contentDescription = "Dashboard",
+                            modifier = Modifier.size(38.dp)  // Icon size (adjust as needed)
+                        )
+                    }
+
+                    /* ✅ OPTION 2: Add Level Badge (Implement after Phase 7.3)
+                    // Level Badge Box
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(
+                                color = Color(0xFF560154),
+                                shape = CircleShape
+                            )
+                            .border(
+                                width = 1.dp,
+                                color = Color(0xFF9C27B0),
+                                shape = CircleShape
+                            )
+                            .clickable { navController.navigate("analytics") },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "3",  // Get from ViewModel later
+                            color = Color.White,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    // Dashboard Icon
+                    IconButton(
+                        onClick = { navController.navigate("analytics") }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Apps,
+                            contentDescription = "Dashboard",
+                            tint = Color.White,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                    */
+                }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
 
+            // REST OF YOUR CODE REMAINS THE SAME
             if (reminders.isEmpty()) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(bottom = 80.dp), // leave space for FAB
+                        .padding(bottom = 80.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        // ✅ Your "no task" image
                         Image(
                             painter = painterResource(id = R.drawable.notasklogo),
                             contentDescription = "No Task Logo",
                             modifier = Modifier
-                                .size(200.dp) // adjust size as needed
+                                .size(200.dp)
                                 .padding(bottom = 16.dp)
                         )
 
-                        // ✅ Your "Create Reminder" text
                         Text(
                             text = "No Reminders",
                             color = Color.White,
@@ -212,7 +265,7 @@ fun MainScreen(
                                     end = 16.dp
                                 )
                                 .clickable {
-                                    vm.load(reminder.id)  // ✅ Load FULL data into editState
+                                    vm.load(reminder.id)
                                     showCreateDialog = true
                                 },
                             elevation = CardDefaults.cardElevation(8.dp),
@@ -238,14 +291,15 @@ fun MainScreen(
         ) {
             FloatingActionButton(
                 onClick = {
-                    vm.load(null)  // ✅ Reset to empty for new task
+                    vm.load(null)
                     showCreateDialog = true
                 },
-                containerColor = Color(0xFF750182) // Same scheme as other pages
+                containerColor = Color(0xFF750182)
             ) {
                 Text("+", fontSize = 24.sp, color = Color.White)
             }
         }
+
         // Task setting bottom-sheet
         if (showCreateDialog) {
             val editState by vm.editState.collectAsState()
@@ -256,7 +310,6 @@ fun MainScreen(
                     vm.load(null)
                 },
                 onSave = { updatedTask ->
-                    // updatedTask now contains ALL the settings
                     vm.update { updatedTask }
                     vm.save(context)
                     showCreateDialog = false
@@ -484,11 +537,25 @@ fun TaskSettingBottomSheet(
         )
     }
     var showAppPicker by remember { mutableStateOf(false) }
-    var selectedTone by remember(task) { mutableStateOf(task?.toneUri ?: "Default") }
+    var selectedTone by remember(task) {
+        mutableStateOf(
+            when (task?.toneUri) {
+                "AUTO" -> "🤖 Auto"
+                "ENCOURAGING" -> "💙 Encouraging"
+                "PLAYFUL" -> "😄 Playful"
+                "GUILT_TRIP" -> "😔 Guilt-Trip"
+                "AGGRESSIVE" -> "💪 Aggressive"
+                null -> "🤖 Auto"
+                else -> "🤖 Auto"
+            }
+        )
+    }
     var toneExpanded by remember { mutableStateOf(false) }
+
+    // ✅ NEW: Store selected snooze minutes
     var selectedSnoozeDuration by remember(task) {
         mutableIntStateOf(task?.snoozeDurationMinutes ?: 10)
-    }  // ✅ NEW: Store selected snooze minutes
+    }
 
     // ✅ NEW: Boost Mode states
     var showBoostDialog by remember { mutableStateOf(false) }
@@ -670,7 +737,15 @@ fun TaskSettingBottomSheet(
                                         } else null,
 
                                         // Tone
-                                        toneUri = if (selectedTone != "Default") selectedTone else null,
+                                        // Tone (convert display text to database value)
+                                        toneUri = when (selectedTone) {
+                                            "🤖 Auto (Recommended)" -> "AUTO"
+                                            "💙 Encouraging" -> "ENCOURAGING"
+                                            "😄 Playful" -> "PLAYFUL"
+                                            "😔 Guilt-Trip" -> "GUILT_TRIP"
+                                            "💪 Aggressive" -> "AGGRESSIVE"
+                                            else -> "AUTO"
+                                        },
 
                                         // Vibration
                                         vibration = vibrationEnabled,
@@ -1481,7 +1556,13 @@ fun TaskSettingBottomSheet(
                 Spacer(modifier = Modifier.height(24.dp))
 
                 // 🔹 Tone Selection Dropdown (COMMON TO BOTH MODES)
-                val toneOptions = listOf("Default", "Tone 1", "Tone 2", "Tone 3", "Silent")
+                val toneOptions = listOf(
+                    "🤖 Auto",
+                    "💙 Encouraging",
+                    "😄 Playful",
+                    "😔 Guilt-Trip",
+                    "💪 Aggressive"
+                )
 
                 Text("Notification Tone", color = Color.White, fontSize = 18.sp, modifier = Modifier.padding(bottom = 8.dp))
 

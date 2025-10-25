@@ -7,20 +7,26 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.example.caresync.analytics.data.AnalyticsDao
+import com.example.caresync.analytics.data.AchievementEntity
+import com.example.caresync.analytics.data.UserProgressEntity
 
 @Database(
     entities = [
         ReminderEntity::class,
         ReminderEventEntity::class,
-        BlacklistHour::class
+        BlacklistHour::class,
+        AchievementEntity::class,
+        UserProgressEntity::class
     ],
-    version = 9,
+    version = 11,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun reminderDao(): ReminderDao
     abstract fun reminderEventDao(): ReminderEventDao
     abstract fun blacklistHourDao(): BlacklistHourDao
+    abstract fun analyticsDao(): AnalyticsDao  // ← ADD THIS
 
     companion object {
         @Volatile private var INSTANCE: AppDatabase? = null
@@ -32,7 +38,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "caresync.db"
                 )
-                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
                     .fallbackToDestructiveMigration()
                     .build().also { INSTANCE = it }
             }
@@ -184,6 +190,48 @@ abstract class AppDatabase : RoomDatabase() {
             override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL("ALTER TABLE reminders ADD COLUMN dueDate INTEGER")
                 Log.d("MIGRATION", "✅ Migration 8→9: Added due date field")
+            }
+        }
+
+        private val MIGRATION_9_10 = object : Migration(12, 13) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Create achievements table
+                database.execSQL("""
+                    CREATE TABLE IF NOT EXISTS achievements (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        name TEXT NOT NULL,
+                        description TEXT NOT NULL,
+                        icon TEXT NOT NULL,
+                        pointsRequired INTEGER NOT NULL,
+                        isUnlocked INTEGER NOT NULL DEFAULT 0,
+                        unlockedAt INTEGER
+                    )
+                """)
+
+                // Create user_progress table
+                database.execSQL("""
+                    CREATE TABLE IF NOT EXISTS user_progress (
+                        id INTEGER PRIMARY KEY NOT NULL DEFAULT 1,
+                        totalPoints INTEGER NOT NULL DEFAULT 0,
+                        currentLevel INTEGER NOT NULL DEFAULT 1,
+                        currentStreak INTEGER NOT NULL DEFAULT 0,
+                        longestStreak INTEGER NOT NULL DEFAULT 0,
+                        lastCompletionDate INTEGER,
+                        totalTasksCompleted INTEGER NOT NULL DEFAULT 0
+                    )
+                """)
+
+                // Insert initial user progress row
+                database.execSQL("""
+                    INSERT INTO user_progress (id) VALUES (1)
+                """)
+            }
+        }
+
+        // ✅ DUMMY MIGRATION (Data not important)
+        private val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Empty - uninstalling anyway
             }
         }
     }

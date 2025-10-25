@@ -17,7 +17,10 @@ fun AppNavigation(
             ProfileScreen(navController)
         }
         composable("main") {
-            AppWithDrawer() // ← now reads from ProfileDataStore directly
+            AppWithDrawer(navController) // ← PASS navController here
+        }
+        composable("analytics") {  // ← ADD THIS NEW ROUTE
+            AnalyticsScreen(navController) // Your dashboard screen
         }
     }
 }

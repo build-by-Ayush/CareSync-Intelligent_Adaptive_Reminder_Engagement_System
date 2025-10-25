@@ -75,22 +75,14 @@ class NotificationDecisionPipeline(private val context: Context) {
         }
 
         // ==========================================
-        // ✅ NEW CHECK 4: Night Period Filter (12 AM - 6 AM)
+        // ✅ NEW CHECK 4: Night Period Filter (Removed)
         // ==========================================
-        val hourNow = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
-        if (hourNow in 0..5 && reminder.title != "Sleep Reminder") {
-            return DecisionResult(
-                shouldSend = false,
-                reason = "Night period (12 AM - 6 AM), notifications disabled except sleep reminder",
-                blockingRule = "NIGHT_PERIOD",
-                metadata = mapOf("currentHour" to hourNow)
-            )
-        }
 
         // ==========================================
         // CHECK 5: Blacklist Check (ONLY for random-time modes)
         // ==========================================
         // ✅ NEW: Only applies to Model Mode ML checks and random-time repetitive modes
+        val hourNow = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
         if (shouldCheckBlacklist(reminder, triggerSource)) {
             val blacklistDao = AppDatabase.get(context).blacklistHourDao()
             val blacklist = blacklistDao.getBlacklist(reminder.id, hourNow)

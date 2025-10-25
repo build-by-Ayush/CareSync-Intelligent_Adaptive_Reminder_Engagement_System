@@ -89,4 +89,9 @@ dependencies {
 
     // Fuzzy matching for app name normalization
     implementation("me.xdrop:fuzzywuzzy:1.4.0")
+
+    // Vico Charts for Compose
+    implementation("com.patrykandpatrick.vico:compose:1.15.0")
+    implementation("com.patrykandpatrick.vico:compose-m3:1.15.0")
+    implementation("com.patrykandpatrick.vico:core:1.15.0")
 }

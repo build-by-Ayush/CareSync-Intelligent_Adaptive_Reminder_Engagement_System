@@ -4,7 +4,7 @@ import androidx.room.*
 import kotlinx.coroutines.flow.Flow
 
 // ==========================================
-// REMINDER DAO (No Changes from Your Original)
+// REMINDER DAO (No Changes)
 // ==========================================
 @Dao
 interface ReminderDao {
@@ -19,16 +19,19 @@ interface ReminderDao {
 
     @Query("DELETE FROM reminders WHERE id = :id")
     suspend fun deleteById(id: Long)
+
+    @Query("SELECT * FROM reminders")
+    suspend fun getAllReminders(): List<ReminderEntity>
 }
 
 // ==========================================
-// REMINDER EVENT DAO (Expanded for Analytics)
+// REMINDER EVENT DAO (Updated with 2 new queries)
 // ==========================================
 @Dao
 interface ReminderEventDao {
 
     // ==========================================
-    // BASIC CRUD (From Your Original)
+    // BASIC CRUD
     // ==========================================
 
     @Insert
@@ -51,7 +54,7 @@ interface ReminderEventDao {
     suspend fun deleteEventsForReminder(reminderId: Long): Int
 
     // ==========================================
-    // BLACKLIST ANALYSIS (For Decision Pipeline)
+    // BLACKLIST ANALYSIS
     // ==========================================
 
     @Query("""
@@ -71,7 +74,7 @@ interface ReminderEventDao {
     ): List<HourCount>
 
     // ==========================================
-    // HIGHLIGHT ANALYSIS (Good Times)
+    // HIGHLIGHT ANALYSIS
     // ==========================================
 
     @Query("""
@@ -104,7 +107,7 @@ interface ReminderEventDao {
     suspend fun getBestHours(reminderId: Long, sinceMillis: Long): List<HourStats>
 
     // ==========================================
-    // PROGRESS TRACKING (Dashboard)
+    // PROGRESS TRACKING
     // ==========================================
 
     @Query("""
@@ -134,7 +137,7 @@ interface ReminderEventDao {
     suspend fun getAverageResponseTime(reminderId: Long, sinceMillis: Long): Long?
 
     // ==========================================
-    // DATE RANGE QUERIES (For Pipeline & Charts)
+    // DATE RANGE QUERIES
     // ==========================================
 
     @Query("""
@@ -148,6 +151,113 @@ interface ReminderEventDao {
         startMillis: Long,
         endMillis: Long
     ): List<ReminderEventEntity>
+
+    @Query("""
+        SELECT * FROM reminder_events 
+        WHERE eventType = :eventType 
+        AND hourOfDay >= :startHour 
+        AND hourOfDay <= :endHour
+    """)
+    suspend fun getEventsByTypeAndTimeRange(
+        eventType: String,
+        startHour: Int,
+        endHour: Int
+    ): List<ReminderEventEntity>
+
+    @Query("SELECT * FROM reminder_events")
+    suspend fun getAllEvents(): List<ReminderEventEntity>
+
+    // ==========================================
+    // ✅ STREAK TRACKING QUERIES (Already Added)
+    // ==========================================
+
+    /**
+     * Get all dates that had at least one notification sent
+     * Used to determine which days should count for streak tracking
+     */
+    @Query("""
+        SELECT DISTINCT DATE(timestamp / 1000, 'unixepoch') as date
+        FROM reminder_events
+        WHERE timestamp >= :startDate 
+        AND timestamp <= :endDate
+        AND eventType = 'TRIGGERED'
+        ORDER BY date ASC
+    """)
+    suspend fun getDatesWithNotifications(startDate: Long, endDate: Long): List<String>
+
+    /**
+     * Check if user completed at least one task on a specific date
+     * Returns true if any completion exists on that date
+     */
+    @Query("""
+        SELECT EXISTS(
+            SELECT 1 FROM reminder_events
+            WHERE DATE(timestamp / 1000, 'unixepoch') = :date
+            AND eventType = 'COMPLETED'
+        )
+    """)
+    suspend fun hasCompletionOnDate(date: String): Boolean
+
+    /**
+     * Get count of completed tasks on a specific date
+     * Used for detailed streak analysis
+     */
+    @Query("""
+        SELECT COUNT(*) FROM reminder_events
+        WHERE DATE(timestamp / 1000, 'unixepoch') = :date
+        AND eventType = 'COMPLETED'
+    """)
+    suspend fun getCompletionCountOnDate(date: String): Int
+
+    // ==========================================
+    // ✅ NEW: POINTS CALCULATION QUERIES (Add These 2)
+    // ==========================================
+
+    /**
+     * Get the most recent SENT event before a completion
+     * Used to calculate response time for points calculation
+     *
+     * @param reminderId The task ID
+     * @param completionTimestamp When the task was completed
+     * @return The SENT event that triggered this completion, or null
+     */
+    @Query("""
+        SELECT * FROM reminder_events
+        WHERE reminderId = :reminderId
+        AND eventType = 'TRIGGERED'
+        AND timestamp <= :completionTimestamp
+        ORDER BY timestamp DESC
+        LIMIT 1
+    """)
+    suspend fun getLastSentEventBeforeCompletion(
+        reminderId: Long,
+        completionTimestamp: Long
+    ): ReminderEventEntity?
+
+    /**
+     * Get all SENT events for a reminder on a specific date
+     * Useful if multiple notifications sent on same day
+     */
+    @Query("""
+        SELECT * FROM reminder_events
+        WHERE reminderId = :reminderId
+        AND eventType = 'TRIGGERED'
+        AND DATE(timestamp / 1000, 'unixepoch') = DATE(:completionTimestamp / 1000, 'unixepoch')
+        ORDER BY timestamp DESC
+    """)
+    suspend fun getSentEventsOnDate(
+        reminderId: Long,
+        completionTimestamp: Long
+    ): List<ReminderEventEntity>
+
+    @Query("""
+        SELECT COUNT(*) 
+        FROM reminder_events 
+        WHERE eventType = :eventType
+        AND (triggerSource IS NULL OR triggerSource NOT LIKE '%BOOST%')
+    """)
+    suspend fun countByTypeExcludingBoost(eventType: String): Int
+
 }
 
 // ==========================================

@@ -113,7 +113,7 @@ class TaskConfigurationEngine(private val context: Context) {
      */
     private suspend fun cleanupOldEvents() {
         try {
-            val fortyFiveDaysAgo = System.currentTimeMillis() - 45 * 24 * 60 * 60 * 1000L
+            val fortyFiveDaysAgo = System.currentTimeMillis() - 100 * 24 * 60 * 60 * 1000L
             val deletedCount = eventDao.deleteOldEvents(fortyFiveDaysAgo)
             Log.d("CLEANUP", "Deleted $deletedCount old event logs (>45 days)")
         } catch (e: Exception) {

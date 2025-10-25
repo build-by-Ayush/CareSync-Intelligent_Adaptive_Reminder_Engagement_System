@@ -494,12 +494,20 @@ class MLCheckWorker(
     private suspend fun fireNotification(
         reminder: com.example.caresync.domain.ReminderSettings,
         mlConfidence: Float,
-        deviceContext: DeviceContext  // ✅ ADD parameter
+        deviceContext: DeviceContext
     ) {
-        // ✅ Create rich event with full metadata
+        // ✅ GENERATE MESSAGE AND GET TONE FIRST
+        val (personalizedMessage, actualTone) = try {
+            com.example.caresync.messaging.MessageGenerator(context).generateMessage(reminder)
+        } catch (e: Exception) {
+            Pair(reminder.notes ?: "Time to work!", "AUTO")
+        }
+
+        // ✅ CREATE EVENT WITH ACTUAL TONE
         val event = createEventWithContext(
             reminderId = reminder.id,
             reminder = reminder,
+            actualTone = actualTone,  // ← ADD THIS
             deviceContext = deviceContext,
             mlConfidence = mlConfidence,
             triggerSource = "ML_MODEL"
@@ -515,9 +523,10 @@ class MLCheckWorker(
             context,
             reminder.id,
             reminder.title,
-            reminder.notes ?: "Time to work!"
+            personalizedMessage
         )
     }
+
 
     /**
      * Log blocked event
@@ -626,6 +635,7 @@ class MLCheckWorker(
     private fun createEventWithContext(
         reminderId: Long,
         reminder: com.example.caresync.domain.ReminderSettings,
+        actualTone: String,
         deviceContext: DeviceContext,
         mlConfidence: Float,
         triggerSource: String

@@ -78,15 +78,23 @@ class FallbackCheckWorker(
                 reminder,
                 mlPrediction = null,  // No ML prediction for fallback
                 mlConfidence = null,
-                bypassCooldown = true,  // ✅ ADD: Bypass cooldown for fallback
-                triggerSource = "FALLBACK"  // ✅ ADD: Mark as fallback
+                bypassCooldown = true,
+                triggerSource = "FALLBACK"
             )
 
             if (decision.shouldSend) {
-                // ✅ Create rich event with metadata
+                // ✅ GENERATE MESSAGE AND GET TONE
+                val (personalizedMessage, actualTone) = try {
+                    com.example.caresync.messaging.MessageGenerator(context).generateMessage(reminder)
+                } catch (e: Exception) {
+                    Pair(reminder.notes ?: "Time to work!", "AUTO")
+                }
+
+                // ✅ CREATE EVENT WITH ACTUAL TONE
                 val event = createEventWithContext(
                     reminderId = reminderId,
                     reminder = reminder,
+                    actualTone = actualTone,
                     slotStart = slotStart,
                     slotEnd = slotEnd
                 )
@@ -98,12 +106,11 @@ class FallbackCheckWorker(
                     context,
                     reminderId,
                     reminder.title,
-                    reminder.notes ?: "Time to work!"
+                    personalizedMessage
                 )
 
-                Log.d(TAG, "🔔 Fallback notification fired with metadata")
-            }
-            else {
+                Log.d(TAG, "🔔 Fallback notification fired with personalized message")
+            } else {
                 // Blocked by pipeline
                 Log.d(TAG, "🚫 Fallback blocked by ${decision.blockingRule}: ${decision.reason}")
                 logFallbackEvent(reminderId, "FALLBACK_BLOCKED", slotStart, slotEnd, decision.blockingRule)
@@ -131,17 +138,22 @@ class FallbackCheckWorker(
         repo.logEvent(reminderId, eventType, metadata)
     }
 
+    /**
+     * Format milliseconds to HH:mm:ss
+     */
     private fun formatTime(millis: Long): String {
         val date = java.util.Date(millis)
         val format = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
         return format.format(date)
     }
+
     /**
      * Create event with fallback metadata
      */
     private fun createEventWithContext(
         reminderId: Long,
         reminder: com.example.caresync.domain.ReminderSettings,
+        actualTone: String,
         slotStart: Long,
         slotEnd: Long
     ): com.example.caresync.data.ReminderEventEntity {
@@ -166,7 +178,10 @@ class FallbackCheckWorker(
             // Notification details
             notificationPriority = reminder.priority.name,
             notificationMethod = reminder.notifyMethods.firstOrNull()?.name ?: "PUSH",
-            toneUsed = reminder.toneUri,
+
+            // ✅ USE ACTUAL TONE FROM MESSAGE GENERATOR
+            toneUsed = actualTone,
+
             vibrationUsed = reminder.vibration,
 
             // ML model data

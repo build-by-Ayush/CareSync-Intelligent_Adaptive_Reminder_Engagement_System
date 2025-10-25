@@ -40,24 +40,22 @@ class ReminderWorker(
 
         // ✅ USE DECISION PIPELINE
         val pipeline = NotificationDecisionPipeline(context)
-        // ✅ NEW: Check if this is a snoozed notification
         val isSnoozed = checkIfSnoozed(reminderId)
         val triggerSource = if (isSnoozed) "SNOOZE" else "SCHEDULED"
 
         val decision = pipeline.shouldSendNotification(
             reminder,
             bypassCooldown = true,
-            triggerSource = triggerSource  // ✅ UPDATED: Use detected source
+            triggerSource = triggerSource
         )
+
         if (!decision.shouldSend) {
-            // Log blocked event with reason
             repo.logEvent(
                 reminderId,
                 "BLOCKED",
                 """{"rule": "${decision.blockingRule}", "reason": "${decision.reason}"}"""
             )
 
-            // ✅ NEW: Reschedule using coordinator (if recurring)
             if (isRecurring(reminder.recurrenceType.name)) {
                 rescheduleNextOccurrence(reminder)
             }
@@ -65,32 +63,39 @@ class ReminderWorker(
             return Result.success()
         }
 
-        // ✅ CREATE EVENT WITH RICH CONTEXT
-        val event = createEventWithContext(reminderId, reminder)
+        // ✅ GENERATE MESSAGE AND GET TONE USED
+        val (personalizedMessage, actualTone) = try {
+            com.example.caresync.messaging.MessageGenerator(context).generateMessage(reminder)
+        } catch (e: Exception) {
+            Pair(reminder.notes ?: "Time to work!", "AUTO")
+        }
 
-        // ✅ INSERT EVENT DIRECTLY VIA DAO
+        // ✅ CREATE EVENT WITH ACTUAL TONE
+        val event = createEventWithContext(reminderId, reminder, actualTone)
+
+        // ✅ INSERT EVENT
         val eventDao = AppDatabase.get(context).reminderEventDao()
         eventDao.insert(event)
 
-        // ✅ SHOW NOTIFICATION (with permission check)
+        // ✅ SHOW NOTIFICATION
         if (hasNotificationPermission(context)) {
-            showNotification(reminder.id, reminder.title, reminder.notes ?: "Time to work!")
+            showNotification(reminder.id, reminder.title, personalizedMessage)
         } else {
-            // Log permission denied
             repo.logEvent(
                 reminderId,
                 "BLOCKED",
-                """{"rule": "NO_PERMISSION", "reason": "POST_NOTIFICATIONS permission not granted"}"""
+                """{"rule":"NO_PERMISSION","reason":"POST_NOTIFICATIONS permission not granted"}"""
             )
         }
 
-        // ✅ NEW: Reschedule next occurrence (if recurring)
+        // ✅ RESCHEDULE NEXT OCCURRENCE
         if (isRecurring(reminder.recurrenceType.name)) {
             rescheduleNextOccurrence(reminder)
         }
 
         return Result.success()
     }
+
 
     /**
      * ✅ NEW: Reschedule next occurrence using SchedulingCoordinator
@@ -110,7 +115,8 @@ class ReminderWorker(
      */
     private fun createEventWithContext(
         reminderId: Long,
-        reminder: com.example.caresync.domain.ReminderSettings
+        reminder: com.example.caresync.domain.ReminderSettings,
+        actualTone: String  // ← ADD THIS PARAMETER
     ): com.example.caresync.data.ReminderEventEntity {
         val now = Calendar.getInstance()
 
@@ -127,7 +133,10 @@ class ReminderWorker(
             // Notification details (from reminder settings)
             notificationPriority = reminder.priority.name,
             notificationMethod = reminder.notifyMethods.firstOrNull()?.name ?: "PUSH",
-            toneUsed = reminder.toneUri,
+
+            // ✅ USE ACTUAL TONE FROM MESSAGE GENERATOR
+            toneUsed = actualTone,  // ← FIXED: Use parameter
+
             vibrationUsed = reminder.vibration,
 
             // Device context
