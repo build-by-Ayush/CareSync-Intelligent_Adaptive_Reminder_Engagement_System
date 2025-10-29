@@ -7,8 +7,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.caresync.data.ReminderRepository
 import com.example.caresync.domain.ReminderSettings
-import com.example.caresync.scheduler.TaskConfigurationEngine  // ✅ NEW IMPORT
-import com.example.caresync.scheduler.ConfigurationResult      // ✅ NEW IMPORT
+import com.example.caresync.scheduler.TaskConfigurationEngine
+import com.example.caresync.scheduler.ConfigurationResult
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -18,7 +18,10 @@ import kotlinx.coroutines.launch
 class ReminderViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repo = ReminderRepository(application)
-    private val engine = TaskConfigurationEngine(application)  // ✅ NEW: Use engine instead of scheduler
+    private val engine = TaskConfigurationEngine(application)
+
+    // ✅ ADD: Debounce protection for toggle
+    private var lastToggleTime = 0L
 
     // All reminders - directly expose ReminderSettings
     val reminders: StateFlow<List<ReminderSettings>> =
@@ -56,7 +59,6 @@ class ReminderViewModel(application: Application) : AndroidViewModel(application
             createdAt = _editState.value.createdAt.takeIf { it > 0 } ?: now
         )
 
-        // ✅ NEW: Use TaskConfigurationEngine instead of direct save + schedule
         val result = engine.processTaskConfiguration(current)
 
         when (result) {
@@ -69,11 +71,9 @@ class ReminderViewModel(application: Application) : AndroidViewModel(application
             }
             is ConfigurationResult.ValidationError -> {
                 Log.e("REMINDER_VM", "Validation error: ${result.message}")
-                // TODO: Show error to user via UI state
             }
             is ConfigurationResult.Failure -> {
                 Log.e("REMINDER_VM", "Failed to save task: ${result.reason}")
-                // TODO: Show error to user via UI state
             }
         }
     }
@@ -82,9 +82,20 @@ class ReminderViewModel(application: Application) : AndroidViewModel(application
     fun delete(context: Context) = viewModelScope.launch {
         val id = _editState.value.id
         if (id > 0) {
-            // ✅ NEW: Use engine to cancel (handles WorkManager + database + logs)
-            engine.cancelTaskConfiguration(id)
-            Log.d("REMINDER_VM", "Task deleted: $id")
+            try {
+                // 1. Cancel scheduled notifications
+                engine.deleteTaskCompletely(id)  // ✅ Use new function for actual deletion
+
+                // 2. Delete from database
+                repo.delete(id)
+
+                // 3. Clear edit state
+                _editState.value = ReminderSettings(title = "")
+
+                Log.d("REMINDER_VM", "Task deleted successfully: $id")
+            } catch (e: Exception) {
+                Log.e("REMINDER_VM", "Error deleting task: $id", e)
+            }
         }
     }
 
@@ -93,4 +104,55 @@ class ReminderViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             repo.logEvent(reminderId, type, metadata)
         }
+
+    /**
+     * ✅ FIXED: Toggle reminder enabled/disabled state
+     *
+     * Protection:
+     * 1. Debounce rapid toggles (< 500ms)
+     * 2. Check if state actually changed
+     * 3. Update database + reschedule
+     */
+    fun toggleReminder(reminderId: Long, enabled: Boolean, context: Context) {
+        viewModelScope.launch {
+            try {
+                // ✅ Debounce: Ignore rapid toggles
+                val now = System.currentTimeMillis()
+                if (now - lastToggleTime < 500) {
+                    Log.d("ReminderViewModel", "⏭️ Ignoring rapid toggle (${now - lastToggleTime}ms)")
+                    return@launch
+                }
+                lastToggleTime = now
+
+                // Get current state
+                val current = repo.get(reminderId) ?: return@launch
+
+                // ✅ Check if state actually changed
+                if (current.enabled == enabled) {
+                    Log.d("ReminderViewModel", "⏭️ State already $enabled, skipping")
+                    return@launch
+                }
+
+                // Update state
+                val updated = current.copy(
+                    enabled = enabled,
+                    updatedAt = System.currentTimeMillis()
+                )
+
+                repo.upsert(updated)
+
+                if (enabled) {
+                    // Reschedule when enabled
+                    engine.processTaskConfiguration(updated)
+                } else {
+                    // Cancel when disabled
+                    engine.cancelTaskConfiguration(reminderId)
+                }
+
+                Log.d("ReminderViewModel", "✅ Toggled reminder $reminderId to enabled=$enabled")
+            } catch (e: Exception) {
+                Log.e("ReminderViewModel", "❌ Error toggling reminder", e)
+            }
+        }
+    }
 }

@@ -1,5 +1,6 @@
 package com.example.caresync.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 import androidx.room.Index
@@ -54,6 +55,26 @@ data class ReminderEntity(
     val allowedTimePeriodsJson: String = "[\"MORNING\",\"AFTERNOON\",\"EVENING\"]",
 
     val dueDate: Long? = null,
+    val voiceModel: String? = null,  // "Default" or "Custom"
+
+    // ✅ NEW: Share Progress fields (ADD THESE 6 LINES)
+    @ColumnInfo(name = "share_progress_enabled")
+    val shareProgressEnabled: Boolean = false,
+
+    @ColumnInfo(name = "share_progress_contact_name")
+    val shareProgressContactName: String? = null,
+
+    @ColumnInfo(name = "share_progress_contact_phone")
+    val shareProgressContactPhone: String? = null,
+
+    @ColumnInfo(name = "send_daily_report")
+    val sendDailyReport: Boolean = false,
+
+    @ColumnInfo(name = "send_weekly_report")
+    val sendWeeklyReport: Boolean = false,
+
+    @ColumnInfo(name = "send_struggling_alerts")
+    val sendStrugglingAlerts: Boolean = false,
 
     // audit
     val createdAt: Long = System.currentTimeMillis(),
@@ -71,14 +92,6 @@ data class ReminderEntity(
         Index("eventType"),
         Index(value = ["reminderId", "timestamp"])
     ],
-    foreignKeys = [
-        ForeignKey(
-            entity = ReminderEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["reminderId"],
-            onDelete = ForeignKey.NO_ACTION  // Auto-delete events when task deleted
-        )
-    ]
 )
 data class ReminderEventEntity(
     @PrimaryKey(autoGenerate = true)
@@ -91,6 +104,7 @@ data class ReminderEventEntity(
     val eventType: String,           // TRIGGERED, COMPLETED, SNOOZED, DISMISSED, IGNORED
     val timestamp: Long,
     val metadataJson: String? = null,
+    val isSnoozedRetrigger: Boolean = false, // ✅ NEW: Mark snooze re-triggers
 
     // ==========================================
     // TIME CONTEXT (For Blacklist/Highlight)

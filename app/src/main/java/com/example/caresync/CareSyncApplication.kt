@@ -2,6 +2,7 @@ package com.example.caresync
 
 import android.app.Application
 import android.util.Log
+import com.example.caresync.accountability.AccountabilityScheduler
 import com.example.caresync.utils.CategoryMapper
 import com.example.caresync.utils.StateDetector
 import kotlinx.coroutines.CoroutineScope
@@ -15,6 +16,7 @@ import kotlinx.coroutines.launch
  * Responsibilities:
  * - Initialize CategoryMapper (load 15,600+ app mapping)
  * - Start StateDetector (monitor IDLE/OFF states)
+ * - Schedule accountability reports (daily/weekly)
  * - Provide global access to these utilities
  */
 class CareSyncApplication : Application() {
@@ -41,6 +43,12 @@ class CareSyncApplication : Application() {
         // Start StateDetector (monitors IDLE/OFF)
         stateDetector = StateDetector(this)
         stateDetector.start()
+        Log.d(TAG, "✅ State detector started")
+
+        // ✅ NEW: Schedule accountability reports
+        AccountabilityScheduler.scheduleDailyReports(this)
+        AccountabilityScheduler.scheduleWeeklyReports(this)
+        Log.d(TAG, "✅ Accountability reports scheduled")
 
         Log.d(TAG, "✅ Application initialized")
     }

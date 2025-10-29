@@ -31,8 +31,21 @@ class ReminderWorker(
 
     override suspend fun doWork(): Result {
         val reminderId = inputData.getLong("reminderId", -1L)
+        val isSnooze = inputData.getBoolean("isSnooze", false)  // ✅ NEW
+
+        // ✅ ADD THESE LOGS
+        Log.d("REMINDER_WORKER", "=== doWork() START ===")
+        Log.d("REMINDER_WORKER", "reminderId: $reminderId")
+        Log.d("REMINDER_WORKER", "isSnooze: $isSnooze")  // Check if flag is true
+
         if (reminderId == -1L) return Result.failure()
 
+        // ✅ NEW: Handle snooze separately (bypass all checks)
+        if (isSnooze) {
+            return handleSnoozeNotification(reminderId)
+        }
+
+        // ✅ NORMAL NOTIFICATION FLOW (existing logic)
         val repo = ReminderRepository(context)
         val reminder = repo.get(reminderId) ?: return Result.failure()
 
@@ -79,7 +92,23 @@ class ReminderWorker(
 
         // ✅ SHOW NOTIFICATION
         if (hasNotificationPermission(context)) {
-            showNotification(reminder.id, reminder.title, personalizedMessage)
+            showNotification(reminder.id, reminder.title, personalizedMessage, reminder)
+
+            // ✅ ADD VOICE SUPPORT
+            if (reminder.notifyMethods.contains(com.example.caresync.domain.NotifyMethod.VOICE)) {
+                try {
+                    val voiceManager = com.example.caresync.voice.VoiceNotificationManager(context)
+                    voiceManager.speakNotification(
+                        reminder = reminder,
+                        textMessage = personalizedMessage,
+                        tone = com.example.caresync.messaging.MessageTone.valueOf(actualTone),
+                        voiceModel = reminder.voiceModel ?: "Default"
+                    )
+                    Log.d("REMINDER_WORKER", "🔊 Voice notification spoken")
+                } catch (e: Exception) {
+                    Log.e("REMINDER_WORKER", "Voice notification failed", e)
+                }
+            }
         } else {
             repo.logEvent(
                 reminderId,
@@ -90,12 +119,70 @@ class ReminderWorker(
 
         // ✅ RESCHEDULE NEXT OCCURRENCE
         if (isRecurring(reminder.recurrenceType.name)) {
-            rescheduleNextOccurrence(reminder)
+            val hasWeekdays = reminder.daysOfWeek?.isNotEmpty() == true
+
+            if (reminder.recurrenceType.name == "DAILY" && !hasWeekdays) {
+                val updated = reminder.copy(enabled = false)
+                repo.upsert(updated)
+                Log.d("REMINDER_WORKER", "⏹️ One-time alarm completed, task auto-disabled: ${reminder.id}")
+            } else {
+                rescheduleNextOccurrence(reminder)
+            }
         }
 
         return Result.success()
     }
 
+    /**
+     * ✅ UPDATED: Handle snooze notification + log event with isSnoozedRetrigger flag
+     */
+    private suspend fun handleSnoozeNotification(reminderId: Long): Result {
+        Log.d("REMINDER_WORKER", "🔔 Processing SNOOZE notification for task $reminderId")
+
+        val repo = ReminderRepository(context)
+        val reminder = repo.get(reminderId) ?: return Result.failure()
+
+        // Generate message
+        val (personalizedMessage, actualTone) = try {
+            com.example.caresync.messaging.MessageGenerator(context).generateMessage(reminder)
+        } catch (e: Exception) {
+            Pair(reminder.notes ?: "Time to work!", "AUTO")
+        }
+
+        // ✅ NEW: Log TRIGGERED event with isSnoozedRetrigger = true
+        val event = createEventWithContext(
+            reminderId = reminderId,
+            reminder = reminder,
+            actualTone = actualTone,
+            isSnoozedRetrigger = true  // ✅ CRITICAL: Mark as snooze re-trigger
+        )
+        val eventDao = AppDatabase.get(context).reminderEventDao()
+        eventDao.insert(event)
+        Log.d("REMINDER_WORKER", "✅ Logged TRIGGERED event (isSnoozedRetrigger=true)")
+
+        // Show notification (no pipeline checks!)
+        if (hasNotificationPermission(context)) {
+            showNotification(reminder.id, reminder.title, personalizedMessage, reminder)
+            Log.d("REMINDER_WORKER", "✅ Snooze notification shown")
+
+            // Voice notification if enabled
+            if (reminder.notifyMethods.contains(com.example.caresync.domain.NotifyMethod.VOICE)) {
+                try {
+                    val voiceManager = com.example.caresync.voice.VoiceNotificationManager(context)
+                    voiceManager.speakNotification(
+                        reminder = reminder,
+                        textMessage = personalizedMessage,
+                        tone = com.example.caresync.messaging.MessageTone.valueOf(actualTone),
+                        voiceModel = reminder.voiceModel ?: "Default"
+                    )
+                    Log.d("REMINDER_WORKER", "🔊 Voice notification spoken")
+                } catch (e: Exception) {
+                    Log.e("REMINDER_WORKER", "Voice notification failed", e)
+                }
+            }
+        }
+        return Result.success()
+    }
 
     /**
      * ✅ NEW: Reschedule next occurrence using SchedulingCoordinator
@@ -111,12 +198,13 @@ class ReminderWorker(
     }
 
     /**
-     * Create event log with all context fields populated
+     * ✅ UPDATED: Create event log with isSnoozedRetrigger parameter
      */
     private fun createEventWithContext(
         reminderId: Long,
         reminder: com.example.caresync.domain.ReminderSettings,
-        actualTone: String  // ← ADD THIS PARAMETER
+        actualTone: String,
+        isSnoozedRetrigger: Boolean = false  // ✅ NEW PARAMETER (defaults to false)
     ): com.example.caresync.data.ReminderEventEntity {
         val now = Calendar.getInstance()
 
@@ -133,10 +221,7 @@ class ReminderWorker(
             // Notification details (from reminder settings)
             notificationPriority = reminder.priority.name,
             notificationMethod = reminder.notifyMethods.firstOrNull()?.name ?: "PUSH",
-
-            // ✅ USE ACTUAL TONE FROM MESSAGE GENERATOR
-            toneUsed = actualTone,  // ← FIXED: Use parameter
-
+            toneUsed = actualTone,
             vibrationUsed = reminder.vibration,
 
             // Device context
@@ -152,7 +237,10 @@ class ReminderWorker(
                 "FIXED_TIME" -> "SCHEDULER"
                 "MANUAL" -> "USER_MANUAL"
                 else -> "SCHEDULER"
-            }
+            },
+
+            // ✅ NEW: Snooze re-trigger flag
+            isSnoozedRetrigger = isSnoozedRetrigger
         )
     }
 
@@ -170,7 +258,7 @@ class ReminderWorker(
         }
     }
 
-    private fun showNotification(reminderId: Long, title: String, content: String) {
+    private suspend fun showNotification(reminderId: Long, title: String, content: String, reminder: com.example.caresync.domain.ReminderSettings) {
         val notificationManager = context.getSystemService(
             Context.NOTIFICATION_SERVICE
         ) as NotificationManager
@@ -188,8 +276,25 @@ class ReminderWorker(
             notificationManager.createNotificationChannel(channel)
         }
 
-        // Build notification
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+        // ✅ FIX: Get snooze count from database
+        val recentSnoozes = try {
+            val eventDao = AppDatabase.get(context).reminderEventDao()
+            val oneHourAgo = System.currentTimeMillis() - 60 * 60 * 1000L
+            val events = eventDao.getEventsBetween(reminderId, oneHourAgo, System.currentTimeMillis())
+
+            val lastTriggeredIndex = events.indexOfLast { it.eventType == EventTypes.TRIGGERED }
+            if (lastTriggeredIndex >= 0) {
+                events.drop(lastTriggeredIndex + 1).count { it.eventType == EventTypes.SNOOZED }
+            } else {
+                events.count { it.eventType == EventTypes.SNOOZED }
+            }
+        } catch (e: Exception) {
+            0
+        }
+
+        val maxSnoozes = reminder.maxSnoozes
+
+        val notificationBuilder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("📋 $title")
             .setContentText(content)
@@ -198,11 +303,20 @@ class ReminderWorker(
             .setContentIntent(createOpenAppIntent(reminderId))
             .setDeleteIntent(createDeleteIntent(reminderId))
             .addAction(createCompleteAction(reminderId))
-            .addAction(createSnoozeAction(reminderId))
+
+        // ✅ ONLY add snooze button if under limit
+        if (recentSnoozes < maxSnoozes) {
+            notificationBuilder.addAction(createSnoozeAction(reminderId))
+            Log.d("NOTIFICATION", "✅ Snooze button added ($recentSnoozes/$maxSnoozes)")
+        } else {
+            Log.d("NOTIFICATION", "🚫 Snooze button removed (limit reached: $recentSnoozes/$maxSnoozes)")
+        }
+
+        notificationBuilder
             .addAction(createDismissAction(reminderId))
             .setVibrate(longArrayOf(0, 500, 200, 500))
-            .build()
 
+        val notification = notificationBuilder.build()
         notificationManager.notify(reminderId.toInt(), notification)
     }
 
@@ -305,7 +419,9 @@ class ReminderWorker(
             context: Context,
             reminderId: Long,
             title: String,
-            content: String
+            content: String,
+            reminder: com.example.caresync.domain.ReminderSettings? = null,  // ✅ ADD
+            actualTone: String = "AUTO"  // ✅ ADD
         ) {
             val notificationManager = context.getSystemService(
                 Context.NOTIFICATION_SERVICE
@@ -340,6 +456,22 @@ class ReminderWorker(
                 .build()
 
             notificationManager.notify(reminderId.toInt(), notification)
+
+            // ✅ ADD VOICE SUPPORT
+            if (reminder != null && reminder.notifyMethods.contains(com.example.caresync.domain.NotifyMethod.VOICE)) {
+                try {
+                    val voiceManager = com.example.caresync.voice.VoiceNotificationManager(context)
+                    voiceManager.speakNotification(
+                        reminder = reminder,
+                        textMessage = content,
+                        tone = com.example.caresync.messaging.MessageTone.valueOf(actualTone),
+                        voiceModel = reminder.voiceModel ?: "Default"
+                    )
+                    Log.d("ML_NOTIFICATION", "🔊 Voice notification spoken")
+                } catch (e: Exception) {
+                    Log.e("ML_NOTIFICATION", "Voice notification failed", e)
+                }
+            }
         }
 
         // Also make these helper functions static

@@ -9,12 +9,20 @@ object MessageTemplates {
 
     /**
      * Get templates for specific tone and state
+     *
+     * @param tone Message tone
+     * @param state User behavior state
+     * @param availablePlaceholders Set of placeholders that have valid data (defaults to just "task")
+     * @return List of compatible templates (filtered based on available data)
      */
-    /**
-     * Get templates for specific tone and state
-     */
-    fun getTemplates(tone: MessageTone, state: UserState): List<String> {
-        return when (tone) {
+    fun getTemplates(
+        tone: MessageTone,
+        state: UserState,
+        availablePlaceholders: Set<String> = setOf("task")  // ✅ NEW parameter
+    ): List<String> {
+
+        // Get all templates for tone + state
+        val allTemplates = when (tone) {
             MessageTone.ENCOURAGING -> encouragingTemplates[state] ?: neutralTemplates
             MessageTone.PLAYFUL -> playfulTemplates[state] ?: neutralTemplates
             MessageTone.GUILT_TRIP -> guiltTripTemplates[state] ?: neutralTemplates
@@ -22,11 +30,59 @@ object MessageTemplates {
             MessageTone.CELEBRATORY -> celebratoryTemplates[state] ?: neutralTemplates
             MessageTone.URGENT -> urgentTemplates[state] ?: neutralTemplates
             MessageTone.MOTIVATING -> motivatingTemplates[state] ?: neutralTemplates
-            MessageTone.SLEEP_ENCOURAGEMENT -> sleepTemplates  // ✅ NEW: Night-time sleep messages
-            MessageTone.AUTO -> neutralTemplates // Fallback
+            MessageTone.SLEEP_ENCOURAGEMENT -> sleepTemplates
+            MessageTone.AUTO -> neutralTemplates
+        }
+
+        // ✅ NEW: Filter templates based on available placeholders
+        val compatibleTemplates = filterTemplatesByPlaceholders(
+            templates = allTemplates,
+            availablePlaceholders = availablePlaceholders
+        )
+
+        // If no compatible templates after filtering, return all (safety fallback)
+        return if (compatibleTemplates.isEmpty()) {
+            android.util.Log.w("MessageTemplates", "No compatible templates after filtering for $tone + $state, using all")
+            allTemplates
+        } else {
+            android.util.Log.d("MessageTemplates", "Filtered ${allTemplates.size} → ${compatibleTemplates.size} templates")
+            compatibleTemplates
         }
     }
 
+    /**
+     * ✅ NEW: Filter templates to only include those compatible with available data
+     *
+     * A template is compatible if all its placeholders have valid data
+     */
+    private fun filterTemplatesByPlaceholders(
+        templates: List<String>,
+        availablePlaceholders: Set<String>
+    ): List<String> {
+
+        return templates.filter { template ->
+            // Extract all placeholders from template
+            val requiredPlaceholders = extractPlaceholders(template)
+
+            // Check if all required placeholders are available
+            val isCompatible = requiredPlaceholders.all { placeholder ->
+                availablePlaceholders.contains(placeholder)
+            }
+
+            isCompatible
+        }
+    }
+
+    /**
+     * ✅ NEW: Extract placeholder names from template string
+     * Example: "Do {task} after {days} days" → ["task", "days"]
+     */
+    private fun extractPlaceholders(template: String): Set<String> {
+        val placeholderRegex = """\{(\w+)\}""".toRegex()
+        return placeholderRegex.findAll(template)
+            .map { it.groupValues[1] }  // Extract placeholder name (without braces)
+            .toSet()
+    }
 
     // ==========================================
     // ENCOURAGING TONE (User-Selectable)

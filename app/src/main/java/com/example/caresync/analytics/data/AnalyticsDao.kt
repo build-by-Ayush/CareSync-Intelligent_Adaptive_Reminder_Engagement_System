@@ -5,7 +5,10 @@ import androidx.room.*
 @Dao
 interface AnalyticsDao {
 
-    // User Progress Operations
+    // ==========================================
+    // USER PROGRESS OPERATIONS
+    // ==========================================
+
     @Query("SELECT * FROM user_progress WHERE id = 1")
     suspend fun getUserProgress(): UserProgressEntity?
 
@@ -15,7 +18,10 @@ interface AnalyticsDao {
     @Update
     suspend fun updateUserProgress(progress: UserProgressEntity)
 
-    // Achievement Operations
+    // ==========================================
+    // ACHIEVEMENT OPERATIONS
+    // ==========================================
+
     @Query("SELECT * FROM achievements ORDER BY pointsRequired ASC")
     suspend fun getAllAchievements(): List<AchievementEntity>
 
@@ -28,7 +34,10 @@ interface AnalyticsDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAchievements(achievements: List<AchievementEntity>)
 
-    // Analytics Queries (using existing reminder_events table)
+    // ==========================================
+    // ANALYTICS QUERIES
+    // ==========================================
+
     @Query("""
         SELECT COUNT(*) 
         FROM reminder_events 
@@ -54,9 +63,16 @@ interface AnalyticsDao {
     """)
     suspend fun getDailyCompletions(startDate: Long): List<DayCount>
 
+    /**
+     * ✅ UPDATED: Exclude snooze re-triggers AND boost notifications
+     * Follows KPI rule: Count snooze as 1, ignore boost completely
+     */
     @Query("""
         SELECT toneUsed, 
-               SUM(CASE WHEN eventType = 'TRIGGERED' THEN 1 ELSE 0 END) as totalSent,
+               SUM(CASE WHEN eventType = 'TRIGGERED' 
+                    AND isSnoozedRetrigger = 0 
+                    AND (triggerSource IS NULL OR triggerSource NOT LIKE '%BOOST%') 
+                    THEN 1 ELSE 0 END) as totalSent,
                SUM(CASE WHEN eventType = 'COMPLETED' THEN 1 ELSE 0 END) as completed
         FROM reminder_events
         WHERE toneUsed IS NOT NULL
@@ -66,7 +82,7 @@ interface AnalyticsDao {
 
 }
 
-// Data classes for query results
+// Data classes
 data class HourCount(val hourOfDay: Int, val count: Int)
 data class DayCount(val date: String, val count: Int)
 data class ToneStatsRaw(val toneUsed: String, val totalSent: Int, val completed: Int)

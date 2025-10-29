@@ -146,8 +146,8 @@ class NotificationDecisionPipeline(private val context: Context) {
             Log.d("PIPELINE", "✅ Snooze notification bypasses priority quota")
         }
 
-        // ✅ NEW CHECK: Time Period Restriction
-        if (reminder.allowedTimePeriods.isNotEmpty()) {
+        // ✅ NEW CHECK: Time Period Restriction (EXCEPT for snooze)
+        if (reminder.allowedTimePeriods.isNotEmpty() && triggerSource != "SNOOZE") {
             val currentHour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
             val isWithinAllowedPeriod = reminder.allowedTimePeriods.any {
                 it.isWithinPeriod(currentHour)
@@ -162,8 +162,9 @@ class NotificationDecisionPipeline(private val context: Context) {
                 )
             }
             Log.d(TAG, "✅ Time period OK (hour $currentHour)")
+        } else if (triggerSource == "SNOOZE") {
+            Log.d(TAG, "✅ Snooze bypasses time period restrictions")
         }
-
 
         // ==========================================
         // CHECK 8: Context-Aware (Avoid During Distraction Apps)
@@ -193,17 +194,8 @@ class NotificationDecisionPipeline(private val context: Context) {
         }
 
         // ==========================================
-        // CHECK 11: Max Snooze Count Check
+        // CHECK 11: Max Snooze Count Check (Removed From Here)
         // ==========================================
-        val snoozeCount = getRecentSnoozeCount(reminder.id)
-        if (snoozeCount >= reminder.maxSnoozes) {
-            return DecisionResult(
-                shouldSend = false,
-                reason = "Max snooze count reached ($snoozeCount >= ${reminder.maxSnoozes})",
-                blockingRule = "MAX_SNOOZES",
-                metadata = mapOf("snoozeCount" to snoozeCount, "maxAllowed" to reminder.maxSnoozes)
-            )
-        }
 
         // ==========================================
         // ✅ ALL CHECKS PASSED

@@ -47,8 +47,8 @@ class MLCheckWorker(
 
         // Load task settings
         val reminder = repo.get(reminderId) ?: run {
-            Log.e(TAG, "Task $reminderId not found")
-            return Result.failure()
+            Log.d(TAG, "⏭️ Task $reminderId no longer exists (deleted), skipping ML check")
+            return Result.success()  // ✅ Changed from failure() to success()
         }
 
         // Check if task still enabled
@@ -520,13 +520,14 @@ class MLCheckWorker(
 
         // Show notification
         com.example.caresync.scheduler.ReminderWorker.showNotificationFromML(
-            context,
-            reminder.id,
-            reminder.title,
-            personalizedMessage
+            context = context,
+            reminderId = reminder.id,
+            title = reminder.title,
+            content = personalizedMessage,
+            reminder = reminder,  // ✅ Pass reminder
+            actualTone = actualTone  // ✅ Use actualTone (already defined above)
         )
     }
-
 
     /**
      * Log blocked event

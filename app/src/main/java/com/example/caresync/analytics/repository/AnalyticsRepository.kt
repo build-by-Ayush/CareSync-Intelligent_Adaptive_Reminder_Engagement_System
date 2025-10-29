@@ -27,8 +27,8 @@ class AnalyticsRepository(
         val progress = getUserProgressOrDefault()
 
         // ✅ COUNT TRIGGERED EVENTS (notifications sent)
-        // Count notifications (excluding boost mode)
-        val totalTriggered = reminderEventDao.countByTypeExcludingBoost("TRIGGERED")
+        // Count notifications (excluding boost and snooze mode)
+        val totalTriggered = reminderEventDao.countByTypeExcludingSnoozeAndBoost("TRIGGERED")
 
         // ✅ COUNT COMPLETED EVENTS
         val totalCompleted = reminderEventDao.countByType("COMPLETED")
@@ -52,7 +52,12 @@ class AnalyticsRepository(
             ?.toneUsed
 
         // Calculate average response time
-        val events = reminderEventDao.getAllEvents()
+        // ✅ UPDATED: Exclude snooze re-triggers and boost from all events
+        val allEvents = reminderEventDao.getAllEvents()
+        val events = allEvents.filter { event ->
+            // Exclude snooze re-triggers and boost notifications
+            !(event.isSnoozedRetrigger || event.triggerSource?.contains("BOOST") == true)
+        }
         val completedEvents = events.filter { it.eventType == "COMPLETED" }
         val avgResponseTime = if (completedEvents.isNotEmpty()) {
             5 // Placeholder
@@ -97,8 +102,13 @@ class AnalyticsRepository(
         val startDate = now - TimeUnit.DAYS.toMillis(days.toLong())
 
         // ✅ Get all events in date range
+        // ✅ UPDATED: Exclude snooze re-triggers and boost from the start
         val allEvents = reminderEventDao.getAllEvents()
-            .filter { it.timestamp >= startDate }
+            .filter { event ->
+                event.timestamp >= startDate &&
+                        // Exclude snooze re-triggers and boost
+                        !(event.isSnoozedRetrigger || event.triggerSource?.contains("BOOST") == true)
+            }
 
         // ✅ Group by date string
         val eventsByDate = allEvents.groupBy { event ->
@@ -114,6 +124,7 @@ class AnalyticsRepository(
 
         // Fill with actual data
         eventsByDate.forEach { (dateString, events) ->
+            // ✅ Events already filtered, just count TRIGGERED and COMPLETED
             val triggered = events.count { it.eventType == "TRIGGERED" }
             val completed = events.count { it.eventType == "COMPLETED" }
 

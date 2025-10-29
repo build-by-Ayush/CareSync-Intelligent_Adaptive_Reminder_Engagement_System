@@ -22,10 +22,13 @@ interface ReminderDao {
 
     @Query("SELECT * FROM reminders")
     suspend fun getAllReminders(): List<ReminderEntity>
+
+    @Query("SELECT * FROM reminders WHERE id = :id")
+    suspend fun getReminderById(id: Long): ReminderEntity?
 }
 
 // ==========================================
-// REMINDER EVENT DAO (Updated with 2 new queries)
+// REMINDER EVENT DAO (Updated with Snooze Queries)
 // ==========================================
 @Dao
 interface ReminderEventDao {
@@ -168,7 +171,7 @@ interface ReminderEventDao {
     suspend fun getAllEvents(): List<ReminderEventEntity>
 
     // ==========================================
-    // ✅ STREAK TRACKING QUERIES (Already Added)
+    // STREAK TRACKING QUERIES
     // ==========================================
 
     /**
@@ -210,7 +213,7 @@ interface ReminderEventDao {
     suspend fun getCompletionCountOnDate(date: String): Int
 
     // ==========================================
-    // ✅ NEW: POINTS CALCULATION QUERIES (Add These 2)
+    // POINTS CALCULATION QUERIES
     // ==========================================
 
     /**
@@ -258,6 +261,94 @@ interface ReminderEventDao {
     """)
     suspend fun countByTypeExcludingBoost(eventType: String): Int
 
+    @Query("SELECT * FROM reminder_events WHERE reminderId = :reminderId AND timestamp >= :sinceMillis ORDER BY timestamp ASC")
+    suspend fun getEventsForReminderSince(reminderId: Long, sinceMillis: Long): List<ReminderEventEntity>
+
+    // ==========================================
+    // ✅ NEW: SNOOZE-AWARE ANALYTICS QUERIES
+    // ==========================================
+
+    /**
+     * Count events by type, EXCLUDING snooze re-triggers
+     * This gives accurate notification count for analytics
+     *
+     * Use this for completion rate calculations instead of countByType()
+     */
+    @Query("""
+        SELECT COUNT(*) 
+        FROM reminder_events 
+        WHERE eventType = :eventType 
+        AND isSnoozedRetrigger = 0
+        AND (triggerSource IS NULL OR triggerSource NOT LIKE '%BOOST%')
+    """)
+    suspend fun countByTypeExcludingSnoozeAndBoost(eventType: String): Int
+
+    /**
+     * Get total times user snoozed notifications
+     * For snooze behavior analytics
+     */
+    @Query("""
+        SELECT COUNT(*) 
+        FROM reminder_events 
+        WHERE eventType = 'SNOOZED'
+    """)
+    suspend fun getTotalSnoozedCount(): Int
+
+    /**
+     * Get snooze success rate
+     * Returns (completedAfterSnooze, totalSnoozed)
+     *
+     * Success = task was eventually completed after being snoozed
+     */
+    @Query("""
+        SELECT 
+            COUNT(DISTINCT CASE 
+                WHEN EXISTS(
+                    SELECT 1 FROM reminder_events e2 
+                    WHERE e2.reminderId = e.reminderId 
+                    AND e2.eventType = 'COMPLETED'
+                    AND e2.timestamp > e.timestamp
+                ) THEN e.reminderId 
+            END) as completed,
+            COUNT(DISTINCT e.reminderId) as total
+        FROM reminder_events e
+        WHERE e.eventType = 'SNOOZED'
+    """)
+    suspend fun getSnoozeSuccessRate(): SnoozeSuccessStats
+
+    /**
+     * Get events for a reminder (used for achievement checks)
+     */
+    @Query("SELECT * FROM reminder_events WHERE reminderId = :reminderId ORDER BY timestamp ASC")
+    suspend fun getEventsForReminder(reminderId: Long): List<ReminderEventEntity>
+
+    /**
+     * Get snooze statistics for a specific reminder
+     * Useful for per-task analytics
+     */
+    @Query("""
+        SELECT 
+            COUNT(*) as snoozeCount,
+            AVG(snoozeDurationMinutes) as avgDuration,
+            MAX(snoozeCount) as maxConsecutiveSnoozes
+        FROM reminder_events
+        WHERE reminderId = :reminderId 
+        AND eventType = 'SNOOZED'
+    """)
+    suspend fun getSnoozeStatsForReminder(reminderId: Long): SnoozeStats?
+
+    /**
+     * Get total UNIQUE notifications (excludes snooze re-triggers)
+     * This is the correct denominator for completion rate
+     */
+    @Query("""
+        SELECT COUNT(*) 
+        FROM reminder_events 
+        WHERE eventType = 'TRIGGERED'
+        AND isSnoozedRetrigger = 0
+        AND (triggerSource IS NULL OR triggerSource NOT LIKE '%BOOST%')
+    """)
+    suspend fun getTotalUniqueNotifications(): Int
 }
 
 // ==========================================
@@ -291,3 +382,18 @@ data class ProgressStats(
     val engagementRate: Int
         get() = if (triggered > 0) ((completed + snoozed + dismissed) * 100 / triggered) else 0
 }
+
+// ✅ NEW: Snooze-specific result classes
+data class SnoozeSuccessStats(
+    val completed: Int,  // How many snoozed tasks were eventually completed
+    val total: Int       // Total tasks that were snoozed
+) {
+    val successRate: Float
+        get() = if (total > 0) completed.toFloat() / total else 0f
+}
+
+data class SnoozeStats(
+    val snoozeCount: Int,           // Total times snoozed
+    val avgDuration: Float?,        // Average snooze duration
+    val maxConsecutiveSnoozes: Int  // Max snoozes in a row
+)

@@ -30,8 +30,19 @@ class FixedTimeScheduler(private val context: Context) {
     fun schedule(reminder: ReminderSettings): Long {
         val nextTrigger = when (reminder.recurrenceType) {
             RecurrenceType.NONE -> {
-                // One-time: use scheduledAtMillis directly
-                reminder.scheduledAtMillis ?: System.currentTimeMillis()
+                // ✅ FIXED: One-time alarm - handle past times
+                val scheduled = reminder.scheduledAtMillis ?: System.currentTimeMillis()
+
+                if (scheduled < System.currentTimeMillis()) {
+                    // Time is in the past → Move to tomorrow at same time
+                    val target = Calendar.getInstance()
+                    target.timeInMillis = scheduled
+                    target.add(Calendar.DAY_OF_MONTH, 1)
+                    Log.d("FIXED_SCHEDULER", "⏭️ One-time alarm in past, moved to tomorrow: ${formatTime(target.timeInMillis)}")
+                    target.timeInMillis
+                } else {
+                    scheduled
+                }
             }
             RecurrenceType.DAILY -> {
                 // Hours mode: fixed time + selected days

@@ -5,15 +5,19 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import android.widget.Toast
 import com.example.caresync.analytics.gamification.PointsCalculator
 import com.example.caresync.analytics.repository.AnalyticsRepository
 import com.example.caresync.data.AppDatabase
 import com.example.caresync.domain.EventTypes
+import com.example.caresync.utils.AppBlockManager  // ✅ ADD
 import com.example.caresync.utils.SafeEventLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Calendar
+import com.example.caresync.utils.AppBlockService
 
 class CompleteTaskReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -41,7 +45,7 @@ class CompleteTaskReceiver : BroadcastReceiver() {
                 completionTimestamp = completionTime
             )
 
-// Calculate response time
+            // Calculate response time
             val responseTime = if (sentEvent != null) {
                 completionTime - sentEvent.timestamp
             } else {
@@ -58,7 +62,7 @@ class CompleteTaskReceiver : BroadcastReceiver() {
                 }
             }
 
-// Get snooze count (existing logic)
+            // Get snooze count (existing logic)
             val snoozeCount = try {
                 val oneHourAgo = completionTime - 60 * 60 * 1000L
                 val events = eventDao.getEventsBetween(reminderId, oneHourAgo, completionTime)
@@ -78,7 +82,7 @@ class CompleteTaskReceiver : BroadcastReceiver() {
                 context = context,
                 reminderId = reminderId,
                 eventType = EventTypes.COMPLETED,
-                toneUsed = toneUsed,  // ← FIXED: Use tone from TRIGGERED event
+                toneUsed = toneUsed, // ← FIXED: Use tone from TRIGGERED event
                 responseTimeMillis = responseTime,
                 snoozeCount = snoozeCount
             )
@@ -96,10 +100,10 @@ class CompleteTaskReceiver : BroadcastReceiver() {
                         "HIGH" -> com.example.caresync.domain.Priority.HIGH
                         "NORMAL" -> com.example.caresync.domain.Priority.NORMAL
                         "LOW" -> com.example.caresync.domain.Priority.LOW
-                        else -> com.example.caresync.domain.Priority.NORMAL  // Default
+                        else -> com.example.caresync.domain.Priority.NORMAL // Default
                     }
                 } catch (e: Exception) {
-                    com.example.caresync.domain.Priority.NORMAL  // Safe fallback
+                    com.example.caresync.domain.Priority.NORMAL // Safe fallback
                 }
 
                 val points = PointsCalculator.calculateTaskPoints(
@@ -136,12 +140,37 @@ class CompleteTaskReceiver : BroadcastReceiver() {
                 if (newUnlocks.isNotEmpty()) {
                     Log.d("GAMIFICATION", "🏆 Unlocked ${newUnlocks.size} achievements!")
                     newUnlocks.forEach {
-                        Log.d("GAMIFICATION", "  - ${it.name} ${it.icon}")
+                        Log.d("GAMIFICATION", " - ${it.name} ${it.icon}")
                     }
                 }
 
             } catch (e: Exception) {
                 Log.e("GAMIFICATION", "Error updating progress: ${e.message}", e)
+            }
+
+            // ✅ NEW: App Blocking Logic
+            task.targetAppPackage?.let { packageName ->
+                if (packageName.isNotBlank()) {
+                    AppBlockManager.blockApp(packageName)
+
+                    val appName = getAppName(context, packageName)
+
+                    // Show toast and start service
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(
+                            context,
+                            "🚫 $appName blocked for 30 minutes",
+                            Toast.LENGTH_LONG
+                        ).show()
+
+                        // ✅ FIXED: Start the blocking service
+                        val serviceIntent = Intent(context, AppBlockService::class.java)
+                        context.startService(serviceIntent)
+                        Log.d("APP_BLOCK", "🚀 Started AppBlockService")
+                    }
+
+                    Log.d("APP_BLOCK", "🚫 Blocked $appName ($packageName) for 30 minutes")
+                }
             }
         }
 
@@ -208,6 +237,16 @@ class CompleteTaskReceiver : BroadcastReceiver() {
             } else null
         } catch (e: Exception) {
             null
+        }
+    }
+
+    // ✅ NEW: Helper to get app name
+    private fun getAppName(context: Context, packageName: String): String {
+        return try {
+            val appInfo = context.packageManager.getApplicationInfo(packageName, 0)
+            context.packageManager.getApplicationLabel(appInfo).toString()
+        } catch (e: Exception) {
+            packageName
         }
     }
 }

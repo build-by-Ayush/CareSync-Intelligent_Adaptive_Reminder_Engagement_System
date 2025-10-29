@@ -67,18 +67,32 @@ class TaskConfigurationEngine(private val context: Context) {
      */
     suspend fun cancelTaskConfiguration(reminderId: Long) {
         try {
-            // Cancel all scheduled jobs
+            // Only cancel scheduled jobs - DO NOT delete from database
             coordinator.cancelTask(reminderId)
-
-            // Delete from database
-            repo.delete(reminderId)
-
-            // Delete event logs
-            eventDao.deleteEventsForReminder(reminderId)
 
             Log.d("CONFIG_ENGINE", "Cancelled task: $reminderId")
         } catch (e: Exception) {
             Log.e("CONFIG_ENGINE", "Failed to cancel task", e)
+        }
+    }
+
+    /**
+     * ✅ NEW: Delete task completely (for actual deletion)
+     */
+    suspend fun deleteTaskCompletely(reminderId: Long) {
+        try {
+            // 1. Cancel scheduled jobs
+            coordinator.cancelTask(reminderId)
+
+            // 2. Delete from database
+            repo.delete(reminderId)
+
+            // 3. Delete event logs
+            eventDao.deleteEventsForReminder(reminderId)
+
+            Log.d("CONFIG_ENGINE", "Deleted task completely: $reminderId")
+        } catch (e: Exception) {
+            Log.e("CONFIG_ENGINE", "Failed to delete task", e)
         }
     }
 
@@ -109,13 +123,13 @@ class TaskConfigurationEngine(private val context: Context) {
     }
 
     /**
-     * Cleanup event logs older than 45 days
+     * Cleanup event logs older than 100 days
      */
     private suspend fun cleanupOldEvents() {
         try {
             val fortyFiveDaysAgo = System.currentTimeMillis() - 100 * 24 * 60 * 60 * 1000L
             val deletedCount = eventDao.deleteOldEvents(fortyFiveDaysAgo)
-            Log.d("CLEANUP", "Deleted $deletedCount old event logs (>45 days)")
+            Log.d("CLEANUP", "Deleted $deletedCount old event logs (>100 days)")
         } catch (e: Exception) {
             Log.e("CLEANUP", "Cleanup failed", e)
         }

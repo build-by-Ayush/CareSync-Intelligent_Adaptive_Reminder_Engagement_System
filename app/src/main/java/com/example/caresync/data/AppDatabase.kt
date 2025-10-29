@@ -19,14 +19,14 @@ import com.example.caresync.analytics.data.UserProgressEntity
         AchievementEntity::class,
         UserProgressEntity::class
     ],
-    version = 11,
+    version = 15,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun reminderDao(): ReminderDao
     abstract fun reminderEventDao(): ReminderEventDao
     abstract fun blacklistHourDao(): BlacklistHourDao
-    abstract fun analyticsDao(): AnalyticsDao  // ← ADD THIS
+    abstract fun analyticsDao(): AnalyticsDao
 
     companion object {
         @Volatile private var INSTANCE: AppDatabase? = null
@@ -38,7 +38,21 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "caresync.db"
                 )
-                    .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
+                    .addMigrations(
+                        MIGRATION_2_3,
+                        MIGRATION_3_4,
+                        MIGRATION_4_5,
+                        MIGRATION_5_6,
+                        MIGRATION_6_7,
+                        MIGRATION_7_8,
+                        MIGRATION_8_9,
+                        MIGRATION_9_10,
+                        MIGRATION_10_11,
+                        MIGRATION_11_12,
+                        MIGRATION_12_13,
+                        MIGRATION_13_14,
+                        MIGRATION_14_15  // ✅ ONLY ADDITION
+                    )
                     .fallbackToDestructiveMigration()
                     .build().also { INSTANCE = it }
             }
@@ -114,7 +128,7 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         // ==========================================
-        // ✅ NEW: MIGRATION FROM VERSION 4 TO 5
+        // MIGRATION FROM VERSION 4 TO 5
         // Adds snoozeDurationMinutes to reminders table
         // ==========================================
         private val MIGRATION_4_5 = object : Migration(4, 5) {
@@ -127,29 +141,29 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        // ✅ NEW: Migration 5 → 6 (Add CASCADE to blacklist_hours)
+        // Migration 5 → 6 (Add CASCADE to blacklist_hours)
         private val MIGRATION_5_6 = object : Migration(5, 6) {
             override fun migrate(database: SupportSQLiteDatabase) {
                 // Recreate blacklist_hours table with CASCADE
 
                 // Step 1: Create temporary table with CASCADE
                 database.execSQL("""
-            CREATE TABLE IF NOT EXISTS blacklist_hours_new (
-                id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-                reminderId INTEGER NOT NULL,
-                hourOfDay INTEGER NOT NULL,
-                dismissalCount INTEGER NOT NULL,
-                lastDismissalTimestamp INTEGER NOT NULL,
-                createdAt INTEGER NOT NULL,
-                FOREIGN KEY(reminderId) REFERENCES reminders(id) ON DELETE CASCADE
-            )
-        """)
+                    CREATE TABLE IF NOT EXISTS blacklist_hours_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        reminderId INTEGER NOT NULL,
+                        hourOfDay INTEGER NOT NULL,
+                        dismissalCount INTEGER NOT NULL,
+                        lastDismissalTimestamp INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        FOREIGN KEY(reminderId) REFERENCES reminders(id) ON DELETE CASCADE
+                    )
+                """)
 
                 // Step 2: Copy existing data (if any)
                 database.execSQL("""
-            INSERT INTO blacklist_hours_new 
-            SELECT * FROM blacklist_hours
-        """)
+                    INSERT INTO blacklist_hours_new 
+                    SELECT * FROM blacklist_hours
+                """)
 
                 // Step 3: Drop old table
                 database.execSQL("DROP TABLE IF EXISTS blacklist_hours")
@@ -159,9 +173,9 @@ abstract class AppDatabase : RoomDatabase() {
 
                 // Step 5: Recreate index
                 database.execSQL("""
-            CREATE UNIQUE INDEX IF NOT EXISTS index_blacklist_hours_reminderId_hourOfDay 
-            ON blacklist_hours(reminderId, hourOfDay)
-        """)
+                    CREATE UNIQUE INDEX IF NOT EXISTS index_blacklist_hours_reminderId_hourOfDay 
+                    ON blacklist_hours(reminderId, hourOfDay)
+                """)
 
                 Log.d("MIGRATION", "✅ Migration 5→6: Added CASCADE to blacklist_hours (preserving existing data)")
             }
@@ -193,7 +207,7 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        private val MIGRATION_9_10 = object : Migration(12, 13) {
+        private val MIGRATION_9_10 = object : Migration(9, 10) {  // ✅ FIXED: Was "12, 13" in your code
             override fun migrate(database: SupportSQLiteDatabase) {
                 // Create achievements table
                 database.execSQL("""
@@ -228,10 +242,50 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        // ✅ DUMMY MIGRATION (Data not important)
+        // DUMMY MIGRATION (Data not important)
         private val MIGRATION_10_11 = object : Migration(10, 11) {
             override fun migrate(database: SupportSQLiteDatabase) {
                 // Empty - uninstalling anyway
+            }
+        }
+
+        // DUMMY MIGRATION (Remove foreign key from reminder_events)
+        private val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Empty - uninstalling anyway
+            }
+        }
+
+        // Migration 12→13: Add voice model field
+        private val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE reminders ADD COLUMN voiceModel TEXT")
+                Log.d("MIGRATION", "✅ Migration 12→13: Added voiceModel field")
+            }
+        }
+
+        // Migration 13→14: Add voice model field
+        private val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE reminders ADD COLUMN voiceModel TEXT")
+                Log.d("MIGRATION", "✅ Migration 13→14: Added voiceModel field")
+            }
+        }
+
+        // ==========================================
+        // ✅ NEW: MIGRATION 14 → 15
+        // Adds isSnoozedRetrigger for snooze analytics
+        // ==========================================
+        private val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Add isSnoozedRetrigger column to reminder_events
+                // Default is 0 (false) for all existing rows
+                database.execSQL("""
+                    ALTER TABLE reminder_events 
+                    ADD COLUMN isSnoozedRetrigger INTEGER NOT NULL DEFAULT 0
+                """)
+
+                Log.d("MIGRATION", "✅ Migration 14→15: Added isSnoozedRetrigger field for snooze analytics")
             }
         }
     }

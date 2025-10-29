@@ -67,5 +67,15 @@ data class ReminderSettings(
         TimePeriod.EVENING
     ),
 
-    val dueDate: Long? = null
+    val voiceModel: String? = null,
+
+    val dueDate: Long? = null,
+
+    // ✅ NEW: Share Progress fields
+    val shareProgressEnabled: Boolean = false,
+    val shareProgressContactName: String? = null,
+    val shareProgressContactPhone: String? = null,
+    val sendDailyReport: Boolean = false,
+    val sendWeeklyReport: Boolean = false,
+    val sendStrugglingAlerts: Boolean = false
 )

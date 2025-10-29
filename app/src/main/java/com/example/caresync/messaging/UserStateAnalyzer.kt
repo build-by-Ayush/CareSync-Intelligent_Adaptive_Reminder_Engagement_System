@@ -4,7 +4,6 @@ import android.content.Context
 import com.example.caresync.data.AppDatabase
 import com.example.caresync.domain.EventTypes
 import com.example.caresync.domain.ReminderSettings
-import java.util.Calendar
 
 /**
  * Analyzes user behavior to determine current state
@@ -23,8 +22,8 @@ class UserStateAnalyzer(private val context: Context) {
 
         // Get last 10 events for this task
         val recentEvents = try {
-            val oneMonthAgo = now - 30L * 24 * 60 * 60 * 1000
-            eventDao.getEventsBetween(reminder.id, oneMonthAgo, now)
+            val threeMonthAgo = now - 90L * 24 * 60 * 60 * 1000
+            eventDao.getEventsBetween(reminder.id, threeMonthAgo, now)
                 .sortedByDescending { it.timestamp }
                 .take(10)
         } catch (e: Exception) {

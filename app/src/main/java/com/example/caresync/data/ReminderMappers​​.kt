@@ -37,7 +37,14 @@ fun ReminderEntity.toDomain(): ReminderSettings = ReminderSettings(
     allowedTimePeriods = parseTimePeriods(allowedTimePeriodsJson),  // ✅ ADD THIS
     escalationPolicy = parseEscalation(escalationPolicyJson),
     createdAt = createdAt,
-    updatedAt = updatedAt
+    updatedAt = updatedAt,
+    voiceModel = voiceModel,
+    shareProgressEnabled = shareProgressEnabled,
+    shareProgressContactName = shareProgressContactName,
+    shareProgressContactPhone = shareProgressContactPhone,
+    sendDailyReport = sendDailyReport,
+    sendWeeklyReport = sendWeeklyReport,
+    sendStrugglingAlerts = sendStrugglingAlerts
 )
 
 fun ReminderSettings.toEntity(): ReminderEntity = ReminderEntity(
@@ -75,7 +82,14 @@ fun ReminderSettings.toEntity(): ReminderEntity = ReminderEntity(
     allowedTimePeriodsJson = allowedTimePeriods.joinToString(",") { it.name },  // ✅ ADD THIS
     escalationPolicyJson = escalationPolicy?.let { toJson(it) },
     createdAt = createdAt,
-    updatedAt = updatedAt
+    updatedAt = updatedAt,
+    voiceModel = voiceModel,
+    shareProgressEnabled = shareProgressEnabled,
+    shareProgressContactName = shareProgressContactName,
+    shareProgressContactPhone = shareProgressContactPhone,
+    sendDailyReport = sendDailyReport,
+    sendWeeklyReport = sendWeeklyReport,
+    sendStrugglingAlerts = sendStrugglingAlerts
 )
 
 // ✅ ADD THIS HELPER FUNCTION AT THE BOTTOM

@@ -24,6 +24,12 @@
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
         tools:ignore="ProtectedPermissions" />
 
+    <!-- Permission to select a contact -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+
+    <!-- ✅ Permission to show overlay over other apps -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
     <application
         android:name=".CareSyncApplication"
         android:allowBackup="true"
@@ -77,5 +83,22 @@
             android:name=".receivers.BoostModeEndReceiver"
             android:exported="false" />
 
+        <receiver
+            android:name=".receivers.SnoozeAlarmReceiver"
+            android:exported="false" />
+
+        <!-- ✅ App Block Service -->
+        <service
+            android:name=".utils.AppBlockService"
+            android:enabled="true"
+            android:exported="false" />
+
+        <!-- ✅ Block Screen Activity -->
+        <activity
+            android:name=".ui.components.BlockScreenActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+            android:launchMode="singleInstance"
+            android:excludeFromRecents="true" />
     </application>
 </manifest>

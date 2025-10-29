@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import com.example.caresync.accountability.StrugglingDetector  // ✅ ADDED LINE 1
 import com.example.caresync.data.AppDatabase
 import com.example.caresync.domain.EventTypes
 import com.example.caresync.utils.SafeEventLogger
@@ -48,6 +49,11 @@ class DismissTaskReceiver : BroadcastReceiver() {
                 // Only update blacklist if event was logged (task still exists)
                 val currentHour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
                 updateBlacklist(blacklistDao, reminderId, currentHour, System.currentTimeMillis())
+
+                // ✅ ADDED LINE 2: Check if user is struggling with this task
+                StrugglingDetector.checkAndAlert(context, reminderId)
+                // ✅ ADDED LINE 3: Log the check
+                Log.d("ACCOUNTABILITY", "✅ Struggling check triggered for task $reminderId")
             }
         }
 
@@ -72,6 +78,7 @@ class DismissTaskReceiver : BroadcastReceiver() {
             0
         }
     }
+
     /**
      * Create event with all context fields populated
      */
@@ -130,6 +137,7 @@ class DismissTaskReceiver : BroadcastReceiver() {
             null
         }
     }
+
     /**
      * Update blacklist tracking for this hour
      */
@@ -168,5 +176,4 @@ class DismissTaskReceiver : BroadcastReceiver() {
             Log.e("BLACKLIST", "Failed to update blacklist", e)
         }
     }
-
 }
