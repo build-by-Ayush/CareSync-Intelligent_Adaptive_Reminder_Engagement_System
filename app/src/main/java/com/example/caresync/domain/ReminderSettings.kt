@@ -77,5 +77,17 @@ data class ReminderSettings(
     val shareProgressContactPhone: String? = null,
     val sendDailyReport: Boolean = false,
     val sendWeeklyReport: Boolean = false,
-    val sendStrugglingAlerts: Boolean = false
+    val sendStrugglingAlerts: Boolean = false,
+
+    val autoOptimizeEnabled: Boolean = true,
+    val lastOptimizedAt: Long = 0L,
+
+    // ✅ NEW: Frequency optimization fields
+    val originalMinOccurrence: Int? = null,
+    val frequencyMultiplier: Float = 1.0f,
+    val lastFrequencyOptimization: Long = 0,
+
+    val originalPriority: String? = null,            // store raw name for safety (or Priority? if preferred)
+    val priorityAutoAdjusted: Boolean = false,       // or INT if db forces, but map as Boolean in code
+
 )

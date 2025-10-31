@@ -1,20 +1,30 @@
 package com.example.caresync.analytics.viewmodel
 
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.caresync.analytics.domain.*
 import com.example.caresync.analytics.gamification.AchievementEngine
 import com.example.caresync.analytics.repository.AnalyticsRepository
 import com.example.caresync.data.AppDatabase
+import com.example.caresync.intelligence.riskdetection.RiskDetectionFactory
+import com.example.caresync.intelligence.riskdetection.RiskDetectionRepository
+import com.example.caresync.intelligence.riskdetection.TaskAtRiskData
+import com.example.caresync.intelligence.riskdetection.RiskAnalyzer
+import com.example.caresync.intelligence.riskdetection.RiskSuggestion
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
 
 /**
  * UI State for Analytics Dashboard
+ * ✅ UPDATED: Added Risk Detection fields
  */
 data class AnalyticsUiState(
     // Overall statistics
@@ -37,6 +47,11 @@ data class AnalyticsUiState(
 
     // Level information
     val levelInfo: LevelInfo? = null,
+
+    // ✅ NEW: Risk Detection fields
+    val atRiskTasks: List<TaskAtRiskData> = emptyList(),
+    val atRiskCount: Int = 0,
+    val showRiskDetails: Boolean = false,
 
     // UI state
     val isLoading: Boolean = true,
@@ -74,9 +89,22 @@ class AnalyticsViewModel(application: Application) : AndroidViewModel(applicatio
         achievementEngine = achievementEngine
     )
 
+    // ✅ NEW: Risk Detection repository
+    private val riskDetectionRepository: RiskDetectionRepository =
+        RiskDetectionFactory.createRepository(application)
+
     // UI State
     private val _uiState = MutableStateFlow(AnalyticsUiState())
     val uiState: StateFlow<AnalyticsUiState> = _uiState.asStateFlow()
+
+    // ✅ NEW: Risk suggestions as StateFlow (derived from atRiskTasks)
+    val riskSuggestions: StateFlow<List<RiskSuggestion>> = _uiState
+        .map { state ->
+            state.atRiskTasks.map { task ->
+                RiskAnalyzer.generateSuggestions(task)
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     init {
         loadAnalytics()
@@ -85,13 +113,14 @@ class AnalyticsViewModel(application: Application) : AndroidViewModel(applicatio
 
     /**
      * Load all analytics data
+     * ✅ UPDATED: Includes risk detection data
      */
     fun loadAnalytics(dateRange: DateRange = DateRange.THIRTY_DAYS) {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }
 
             try {
-                // Load all data in parallel for better performance
+                // Load all existing data in parallel for better performance
                 val statistics = repository.getUserStatistics(dateRange.days)
                 val completionRateData = repository.getCompletionRateByDate(dateRange.days)
                 val productivityHours = repository.getProductivityByHour()
@@ -100,6 +129,9 @@ class AnalyticsViewModel(application: Application) : AndroidViewModel(applicatio
                 val achievements = repository.getAchievements()
                 val insights = repository.generateInsights()
 
+                // ✅ NEW: Load risk detection data
+                val atRiskTasks = riskDetectionRepository.getTasksAtRisk()
+
                 // Calculate level info
                 val levelInfo = LevelInfo(
                     currentLevel = statistics.currentLevel,
@@ -107,6 +139,8 @@ class AnalyticsViewModel(application: Application) : AndroidViewModel(applicatio
                     nextLevelPoints = statistics.nextLevelPoints,
                     progress = calculateLevelProgress(statistics)
                 )
+
+                Log.d("AnalyticsVM", "✅ Loaded ${atRiskTasks.size} at-risk tasks")
 
                 _uiState.update {
                     it.copy(
@@ -119,11 +153,15 @@ class AnalyticsViewModel(application: Application) : AndroidViewModel(applicatio
                         unlockedCount = achievements.count { achievement -> achievement.isUnlocked },
                         insights = insights,
                         levelInfo = levelInfo,
+                        // ✅ NEW: Add risk detection data
+                        atRiskTasks = atRiskTasks,
+                        atRiskCount = atRiskTasks.size,
                         isLoading = false,
                         selectedDateRange = dateRange
                     )
                 }
             } catch (e: Exception) {
+                Log.e("AnalyticsVM", "Error loading analytics", e)
                 _uiState.update {
                     it.copy(
                         isLoading = false,
@@ -136,16 +174,20 @@ class AnalyticsViewModel(application: Application) : AndroidViewModel(applicatio
 
     /**
      * Refresh all data
+     * ✅ UPDATED: Includes risk detection refresh
      */
     fun refreshData() {
         viewModelScope.launch {
             try {
-                // ✅ ADD THIS: Validate streak before loading data
+                // Validate streak before loading data
                 repository.validateStreak()
 
-                // Then load analytics
+                // Then load analytics (which now includes risk detection)
                 loadAnalytics(_uiState.value.selectedDateRange)
+
+                Log.d("AnalyticsVM", "✅ Data refreshed successfully")
             } catch (e: Exception) {
+                Log.e("AnalyticsVM", "Error refreshing data", e)
                 _uiState.update {
                     it.copy(error = "Failed to refresh: ${e.message}")
                 }
@@ -183,14 +225,32 @@ class AnalyticsViewModel(application: Application) : AndroidViewModel(applicatio
                     }
                 }
 
-                // Refresh data to show updates
+                // Refresh data to show updates (including risk detection)
                 refreshData()
             } catch (e: Exception) {
+                Log.e("AnalyticsVM", "Error on task completion", e)
                 _uiState.update {
                     it.copy(error = "Failed to update progress: ${e.message}")
                 }
             }
         }
+    }
+
+    /**
+     * ✅ NEW: Toggle risk details modal visibility
+     */
+    fun toggleRiskDetails() {
+        _uiState.update { currentState ->
+            currentState.copy(showRiskDetails = !currentState.showRiskDetails)
+        }
+        Log.d("AnalyticsVM", "Risk details toggled: ${_uiState.value.showRiskDetails}")
+    }
+
+    /**
+     * ✅ NEW: Close risk details modal
+     */
+    fun closeRiskDetails() {
+        _uiState.update { it.copy(showRiskDetails = false) }
     }
 
     /**
@@ -256,6 +316,7 @@ class AnalyticsViewModel(application: Application) : AndroidViewModel(applicatio
                 achievementEngine.seedAchievements()
             } catch (e: Exception) {
                 // Silently fail - not critical
+                Log.d("AnalyticsVM", "Achievements already seeded")
             }
         }
     }
@@ -264,5 +325,6 @@ class AnalyticsViewModel(application: Application) : AndroidViewModel(applicatio
         // This could trigger a UI event (like showing a dialog or toast)
         // For now, just log it
         // You can implement this with SharedFlow or LiveData events
+        Log.d("AnalyticsVM", "🏆 Achievement unlocked: ${achievement.name}")
     }
 }

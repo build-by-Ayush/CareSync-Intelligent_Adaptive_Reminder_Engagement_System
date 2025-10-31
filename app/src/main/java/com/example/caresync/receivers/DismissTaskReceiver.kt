@@ -46,14 +46,41 @@ class DismissTaskReceiver : BroadcastReceiver() {
             )
 
             if (success) {
-                // Only update blacklist if event was logged (task still exists)
-                val currentHour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
-                updateBlacklist(blacklistDao, reminderId, currentHour, System.currentTimeMillis())
+                // ✅ NEW: Only update blacklist if NOT snoozed retrigger
+                val isSnoozedRetrigger = intent.getBooleanExtra("isSnoozedRetrigger", false)
 
-                // ✅ ADDED LINE 2: Check if user is struggling with this task
-                StrugglingDetector.checkAndAlert(context, reminderId)
-                // ✅ ADDED LINE 3: Log the check
-                Log.d("ACCOUNTABILITY", "✅ Struggling check triggered for task $reminderId")
+                if (!isSnoozedRetrigger) {
+                    val currentHour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+                    updateBlacklist(blacklistDao, reminderId, currentHour, System.currentTimeMillis())
+                    Log.d("BLACKLIST_FILTER", "✅ Updating blacklist: task $reminderId hour $currentHour (original dismissal)")
+
+                    // ✅ MOVED HERE: Only check struggling for original dismissals
+                    StrugglingDetector.checkAndAlert(context, reminderId)
+                    Log.d("ACCOUNTABILITY", "✅ Struggling check triggered for task $reminderId")
+                } else {
+                    Log.d("BLACKLIST_FILTER", "⏭️ Skipping blacklist update for task $reminderId (snoozed retrigger)")
+                }
+            }
+
+            // ✅ FIXED: Learn from dismissal (only if NOT snoozed retrigger)
+            try {
+                val isSnoozedRetrigger = intent.getBooleanExtra("isSnoozedRetrigger", false)  // ✅ ADD THIS LINE
+
+                // ✅ SKIP LEARNING IF SNOOZED RETRIGGER
+                if (isSnoozedRetrigger) {
+                    Log.d("LEARNING_FILTER", "⏭️ Skipping snoozed retrigger for task $reminderId - NOT learning from this dismissal")
+                    // Don't call OptimalTimeLearner - continue to next section
+                } else {
+                    val currentHour = java.util.Calendar.getInstance()
+                        .get(java.util.Calendar.HOUR_OF_DAY)
+
+                    com.example.caresync.intelligence.OptimalTimeLearner(context)
+                        .updatePreferredTimes(reminderId, currentHour, completed = false)
+
+                    Log.d("LEARNING_FILTER", "✅ Learning from ORIGINAL dismissal: task $reminderId at hour $currentHour")
+                }
+            } catch (e: Exception) {
+                Log.e("ADAPTIVE_LAYER", "Failed to update preferred times", e)
             }
         }
 

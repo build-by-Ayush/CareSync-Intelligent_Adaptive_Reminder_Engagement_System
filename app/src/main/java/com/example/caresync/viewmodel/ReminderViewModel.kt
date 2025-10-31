@@ -6,6 +6,7 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.caresync.data.ReminderRepository
+import com.example.caresync.domain.Priority
 import com.example.caresync.domain.ReminderSettings
 import com.example.caresync.scheduler.TaskConfigurationEngine
 import com.example.caresync.scheduler.ConfigurationResult
@@ -154,5 +155,51 @@ class ReminderViewModel(application: Application) : AndroidViewModel(application
                 Log.e("ReminderViewModel", "❌ Error toggling reminder", e)
             }
         }
+    }
+
+    /**
+     * Reschedule task with priority reset and auto-adjustment logic.
+     * Should be called when user confirms new due date (from UI).
+     *
+     * @param newDueDate The due date picked by user.
+     * @param userPriority Priority set in UI (null if untouched).
+     * @param context Pass the current context (needed for saving/scheduling).
+     */
+    fun rescheduleTask(newDueDate: Long, userPriority: Priority?, context: Context) = viewModelScope.launch {
+        val current = _editState.value
+        val autoOptimize = current.autoOptimizeEnabled
+
+        // Determine correct base priority
+        val basePriority = when {
+            userPriority != null -> userPriority // Use UI chosen value
+            else -> {
+                val daysLeft = ((newDueDate - System.currentTimeMillis()) / (1000 * 60 * 60 * 24)).toInt()
+                when {
+                    daysLeft > 21 -> Priority.LOW
+                    daysLeft in 7..20 -> Priority.NORMAL
+                    daysLeft in 0..6 -> Priority.HIGH
+                    else -> Priority.HIGH // No CRITICAL, as per your system
+                }
+            }
+        }
+
+        // Build updated reminder settings
+        val updated = current.copy(
+            dueDate = newDueDate,
+            priority = basePriority,
+            originalPriority = basePriority.name, // Treat as baseline for auto-adjustment worker
+            priorityAutoAdjusted = false
+        )
+
+        // Save with correct escalation logic
+        if (autoOptimize) {
+            repo.upsert(updated)
+            engine.processTaskConfiguration(updated)
+        } else {
+            repo.upsert(updated.copy(priorityAutoAdjusted = false)) // Disable escalation
+            engine.processTaskConfiguration(updated.copy(priorityAutoAdjusted = false))
+        }
+
+        Log.d("REMINDER_VM", "Rescheduled task '${updated.title}' with new due date $newDueDate and priority $basePriority (user picked: $userPriority, optimize: $autoOptimize)")
     }
 }

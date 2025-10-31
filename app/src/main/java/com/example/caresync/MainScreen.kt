@@ -228,7 +228,7 @@ fun MainScreen(
         // Bottom Sheet
         if (showCreateDialog) {
             TaskSettingBottomSheet(
-                task = selectedReminder,  // ✅ Pass selectedReminder, not editState
+                task = selectedReminder,
                 onDismiss = {
                     showCreateDialog = false
                 },
@@ -236,7 +236,8 @@ fun MainScreen(
                     vm.update { updatedTask }
                     vm.save(context)
                     showCreateDialog = false
-                }
+                },
+                reminderViewModel = vm
             )
         }
     }

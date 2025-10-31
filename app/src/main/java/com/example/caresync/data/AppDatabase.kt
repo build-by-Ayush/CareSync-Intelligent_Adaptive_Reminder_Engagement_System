@@ -16,10 +16,11 @@ import com.example.caresync.analytics.data.UserProgressEntity
         ReminderEntity::class,
         ReminderEventEntity::class,
         BlacklistHour::class,
+        PreferredTime::class,
         AchievementEntity::class,
         UserProgressEntity::class
     ],
-    version = 15,
+    version = 18,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -27,6 +28,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun reminderEventDao(): ReminderEventDao
     abstract fun blacklistHourDao(): BlacklistHourDao
     abstract fun analyticsDao(): AnalyticsDao
+    abstract fun preferredTimesDao(): PreferredTimesDao
 
     companion object {
         @Volatile private var INSTANCE: AppDatabase? = null
@@ -51,7 +53,10 @@ abstract class AppDatabase : RoomDatabase() {
                         MIGRATION_11_12,
                         MIGRATION_12_13,
                         MIGRATION_13_14,
-                        MIGRATION_14_15  // ✅ ONLY ADDITION
+                        MIGRATION_14_15,
+                        MIGRATION_15_16,
+                        MIGRATION_16_17,
+                        MIGRATION_17_18
                     )
                     .fallbackToDestructiveMigration()
                     .build().also { INSTANCE = it }
@@ -286,6 +291,118 @@ abstract class AppDatabase : RoomDatabase() {
                 """)
 
                 Log.d("MIGRATION", "✅ Migration 14→15: Added isSnoozedRetrigger field for snooze analytics")
+            }
+        }
+
+        /**
+         * Migration 15 → 16: Adaptive Intelligence Layer - Smart Time Learning
+         *
+         * Changes:
+         * 1. Create preferred_times table (opposite of blacklist_hours)
+         * 2. Add adaptive layer control fields to reminders table
+         */
+        val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // ==========================================
+                // CREATE PREFERRED_TIMES TABLE
+                // ==========================================
+                database.execSQL("""
+            CREATE TABLE IF NOT EXISTS preferred_times (
+                id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                reminderId INTEGER NOT NULL,
+                hourOfDay INTEGER NOT NULL CHECK(hourOfDay >= 0 AND hourOfDay <= 23),
+                completionRate REAL NOT NULL,
+                totalNotifications INTEGER NOT NULL,
+                totalCompletions INTEGER NOT NULL,
+                totalDismissals INTEGER NOT NULL,
+                confidence REAL NOT NULL,
+                lastUpdated INTEGER NOT NULL,
+                FOREIGN KEY(reminderId) REFERENCES reminders(id) ON DELETE CASCADE
+            )
+        """.trimIndent())
+
+                // ✅ CRITICAL: Create composite unique index (not two separate indices)
+                database.execSQL("""
+            CREATE UNIQUE INDEX IF NOT EXISTS index_preferred_times_reminderId_hourOfDay 
+            ON preferred_times(reminderId, hourOfDay)
+        """.trimIndent())
+
+                // ==========================================
+                // ADD ADAPTIVE LAYER FIELDS TO REMINDERS
+                // ==========================================
+
+                database.execSQL("""
+            ALTER TABLE reminders 
+            ADD COLUMN autoOptimizeEnabled INTEGER NOT NULL DEFAULT 1
+        """.trimIndent())
+
+                database.execSQL("""
+            ALTER TABLE reminders 
+            ADD COLUMN lastOptimizedAt INTEGER NOT NULL DEFAULT 0
+        """.trimIndent())
+
+                Log.d("MIGRATION_15_16", "✅ Preferred times table created")
+                Log.d("MIGRATION_15_16", "✅ Adaptive layer fields added to reminders")
+            }
+        }
+
+        /**
+         * Migration 16 → 17: Dynamic Frequency Adjustment
+         *
+         * Changes:
+         * 1. Add originalMinOccurrence (preserve user's original setting)
+         * 2. Add frequencyMultiplier (current adjustment factor)
+         * 3. Add lastFrequencyOptimization (timestamp of last optimization)
+         */
+        private val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Add frequency optimization fields
+                database.execSQL("""
+            ALTER TABLE reminders 
+            ADD COLUMN originalMinOccurrence INTEGER
+        """.trimIndent())
+
+                database.execSQL("""
+            ALTER TABLE reminders 
+            ADD COLUMN frequencyMultiplier REAL NOT NULL DEFAULT 1.0
+        """.trimIndent())
+
+                database.execSQL("""
+            ALTER TABLE reminders 
+            ADD COLUMN lastFrequencyOptimization INTEGER NOT NULL DEFAULT 0
+        """.trimIndent())
+
+                // ✅ Copy existing repeatInterval to originalMinOccurrence
+                database.execSQL("""
+            UPDATE reminders 
+            SET originalMinOccurrence = repeatInterval 
+            WHERE originalMinOccurrence IS NULL
+        """.trimIndent())
+
+                Log.d("MIGRATION_16_17", "✅ Frequency optimization fields added")
+            }
+        }
+
+        /**
+         * Migration 17 → 18: Priority Auto-Escalation
+         * - Adds fields for original priority and auto-adjusted flag
+         */
+        private val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("""
+            ALTER TABLE reminders ADD COLUMN originalPriority TEXT
+        """.trimIndent())
+
+                database.execSQL("""
+            ALTER TABLE reminders ADD COLUMN priorityAutoAdjusted INTEGER NOT NULL DEFAULT 0
+        """.trimIndent())
+
+                // Optionally set current user-set priority as original if desired
+                database.execSQL("""
+            UPDATE reminders SET originalPriority = priority WHERE originalPriority IS NULL
+        """.trimIndent())
+
+                Log.d("MIGRATION_17_18", "✅ Priority auto-escalation fields added")
             }
         }
     }

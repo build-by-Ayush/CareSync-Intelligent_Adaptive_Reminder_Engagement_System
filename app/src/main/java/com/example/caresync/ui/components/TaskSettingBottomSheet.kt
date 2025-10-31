@@ -40,7 +40,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.filled.ContactPage
 import androidx.compose.foundation.BorderStroke
-
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.runtime.collectAsState
+import com.example.caresync.data.ProfileDataStore
+import com.example.caresync.viewmodel.ReminderViewModel
 
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -48,7 +51,8 @@ import androidx.compose.foundation.BorderStroke
 fun TaskSettingBottomSheet(
     task: ReminderSettings?,
     onDismiss: () -> Unit,
-    onSave: (ReminderSettings) -> Unit
+    onSave: (ReminderSettings) -> Unit,
+    reminderViewModel: ReminderViewModel  // ✅ ADD THIS
 ) {
     var name by remember(task) { mutableStateOf(task?.title ?: "") }
     var selectedPriority by remember(task) {
@@ -301,6 +305,20 @@ fun TaskSettingBottomSheet(
         }
     }
 
+    // ✅ ADD THESE 3 LINES BEFORE autoOptimizeEnabled
+    val context2 = LocalContext.current  // Use context2 since context is already used above
+    val profileDataStore = remember { ProfileDataStore(context2) }
+    val globalDefault by profileDataStore.isAdaptiveLayerEnabled.collectAsState(initial = true)
+
+    // Now this line will work
+    var autoOptimizeEnabled by remember(task, globalDefault) {
+        mutableStateOf(task?.autoOptimizeEnabled ?: globalDefault)
+    }
+
+    // Track if user manually overrode system priority
+    var userManuallyOverriddenPriority by remember { mutableStateOf(false) }
+    var lastSystemAdjustedPriority by remember { mutableStateOf<Priority?>(null) }
+
     // Add this right after you initialize the variables
     LaunchedEffect(task) {
         Log.d("TaskSheet", "=== TASK LOADED ===")
@@ -388,18 +406,45 @@ fun TaskSettingBottomSheet(
                                     else -> emptySet()
                                 }
 
+                                // ✅ NEW: Determine final priority and auto-adjust flags
+                                val selectedPriorityEnum = when (selectedPriority) {
+                                    "Low" -> Priority.LOW
+                                    "High" -> Priority.HIGH
+                                    else -> Priority.NORMAL
+                                }
+
+                                val (finalPriority, finalOriginalPriority, finalPriorityAutoAdjusted) = when {
+                                    // User manually overrode system priority
+                                    userManuallyOverriddenPriority -> {
+                                        Triple(
+                                            selectedPriorityEnum,
+                                            selectedPriorityEnum.name,  // Update baseline to user's choice
+                                            false  // Disable auto-adjust since user took control
+                                        )
+                                    }
+                                    // System auto-adjusted, user didn't change it
+                                    else -> {
+                                        Triple(
+                                            selectedPriorityEnum,
+                                            task?.originalPriority ?: selectedPriorityEnum.name,  // Keep original baseline
+                                            task?.priorityAutoAdjusted ?: false  // Preserve existing auto-adjust flag
+                                        )
+                                    }
+                                }
+
                                 val updatedTask = (task ?: ReminderSettings(title = "")).copy(
                                     title = name,
 
                                     // ✅ NEW: Auto-enable when saving
                                     enabled = true,
 
-                                    // Priority and mode
-                                    priority = when (selectedPriority) {
-                                        "Low" -> Priority.LOW
-                                        "High" -> Priority.HIGH
-                                        else -> Priority.NORMAL
-                                    },
+                                    autoOptimizeEnabled = autoOptimizeEnabled,
+
+                                    // ✅ UPDATED: Priority with auto-adjust support
+                                    priority = finalPriority,
+                                    originalPriority = finalOriginalPriority,
+                                    priorityAutoAdjusted = finalPriorityAutoAdjusted,
+
                                     triggerMode = when (selectedMode) {
                                         "Model" -> TriggerMode.MODEL_ASSISTED
                                         else -> TriggerMode.FIXED_TIME
@@ -416,11 +461,11 @@ fun TaskSettingBottomSheet(
                                     notifyMethods = selectedReminderMethods.toSet(),
                                     dueDate = selectedDueDate,
 
-                                    // ✅ NEW: Voice model (ADD THIS)
+                                    // ✅ Voice model
                                     voiceModel = if (selectedReminderMethods.contains(NotifyMethod.VOICE))
                                         selectedVoiceModel else null,
 
-                                    // ✅ NEW: Share Progress settings (ADD THESE 6 LINES)
+                                    // ✅ Share Progress settings
                                     shareProgressEnabled = shareProgressEnabled,
                                     shareProgressContactName = if (shareProgressEnabled) contactName.takeIf { it.isNotEmpty() } else null,
                                     shareProgressContactPhone = if (shareProgressEnabled) contactPhone.takeIf { it.length == 10 } else null,
@@ -428,10 +473,9 @@ fun TaskSettingBottomSheet(
                                     sendWeeklyReport = if (shareProgressEnabled) sendWeeklyReport else false,
                                     sendStrugglingAlerts = if (shareProgressEnabled) sendStrugglingAlerts else false,
 
+                                    smsNumber = null,
 
-                                    smsNumber = null,  // ✅ SMS feature removed, always null
-
-                                    // Tone - YOUR EXISTING CODE
+                                    // Tone
                                     toneUri = when (selectedTone) {
                                         "Auto (Recommended)" -> "AUTO"
                                         "Encouraging" -> "ENCOURAGING"
@@ -440,13 +484,13 @@ fun TaskSettingBottomSheet(
                                         "Aggressive" -> "AGGRESSIVE"
                                         else -> "AUTO"
                                     },
-                                    // Vibration - YOUR EXISTING CODE
+                                    // Vibration
                                     vibration = vibrationEnabled,
-                                    // App target - YOUR EXISTING CODE
+                                    // App target
                                     targetAppPackage = selectedApp?.packageName,
-                                    // Snooze duration - YOUR EXISTING CODE
+                                    // Snooze duration
                                     snoozeDurationMinutes = selectedSnoozeDuration,
-                                    // Time periods - YOUR EXISTING CODE
+                                    // Time periods
                                     allowedTimePeriods = selectedTimePeriods.mapNotNull {
                                         try {
                                             com.example.caresync.domain.TimePeriod.valueOf(it)
@@ -454,16 +498,53 @@ fun TaskSettingBottomSheet(
                                             null
                                         }
                                     },
-                                    // Timestamp - YOUR EXISTING CODE
+                                    // Timestamp
                                     updatedAt = System.currentTimeMillis()
                                 )
 
-                                onSave(updatedTask)
+                                // ✅ Check if due date was rescheduled
+                                val dueDateChanged = task != null && task.dueDate != selectedDueDate
 
-                                Log.d("TaskSheet", "=== SAVING ===")
-                                Log.d("TaskSheet", "Voice Model: $selectedVoiceModel")
-                                Log.d("TaskSheet", "Share Progress: $shareProgressEnabled")
-                                Log.d("TaskSheet", "Contact: $contactName - $contactPhone")
+                                if (dueDateChanged && selectedDueDate != null) {
+                                    // User rescheduled → use reschedule logic with priority reset
+
+                                    // Determine if user explicitly changed priority
+                                    val originalPriorityUI = when (task?.priority) {
+                                        Priority.LOW -> "Low"
+                                        Priority.NORMAL -> "Medium"
+                                        Priority.HIGH, Priority.CRITICAL -> "High"
+                                        else -> "Low"
+                                    }
+
+                                    val userChangedPriority = selectedPriority != originalPriorityUI
+
+                                    val userPriority = if (userChangedPriority) {
+                                        when (selectedPriority) {
+                                            "Low" -> Priority.LOW
+                                            "High" -> Priority.HIGH
+                                            else -> Priority.NORMAL
+                                        }
+                                    } else null  // null means "let system calculate"
+
+                                    // Update edit state
+                                    reminderViewModel.update { updatedTask }
+
+                                    // Call reschedule function from ViewModel
+                                    reminderViewModel.rescheduleTask(
+                                        newDueDate = selectedDueDate!!,
+                                        userPriority = userPriority,
+                                        context = context
+                                    )
+
+                                    onDismiss()
+                                    Log.d("TaskSheet", "🔄 Rescheduled with priority reset (userPriority: $userPriority, autoOptimize: $autoOptimizeEnabled)")
+
+                                } else {
+                                    // Normal save (no reschedule or no due date)
+                                    onSave(updatedTask)
+                                    onDismiss()
+                                    Log.d("TaskSheet", "💾 Normal save - Title: $name, Priority: $finalPriority, AutoAdjusted: $finalPriorityAutoAdjusted")
+                                }
                             }
                         }
                     ) {
@@ -511,7 +592,21 @@ fun TaskSettingBottomSheet(
                     priorities.forEach { priority ->
                         val isSelected = priority == selectedPriority
                         Button(
-                            onClick = { selectedPriority = priority },
+                            onClick = {
+                                selectedPriority = priority
+
+                                // ✅ NEW: Detect if user is overriding system priority
+                                val newPriority = when (priority) {
+                                    "Low" -> Priority.LOW
+                                    "High" -> Priority.HIGH
+                                    else -> Priority.NORMAL
+                                }
+
+                                if (task?.priorityAutoAdjusted == true && newPriority != task.priority) {
+                                    userManuallyOverriddenPriority = true
+                                    Log.d("TaskSheet", "👤 User overrode system priority: ${task.priority} → $newPriority")
+                                }
+                            },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = if (isSelected) Color(0xFF262131) else Color(0xFF3E3951),
                                 contentColor = Color.White
@@ -522,6 +617,44 @@ fun TaskSettingBottomSheet(
                             Text(priority, fontSize = 16.sp)
                         }
                     }
+                }
+
+                // ✅ NEW: Show auto-adjustment info message
+                if (task != null && task.priorityAutoAdjusted && !userManuallyOverriddenPriority) {
+                    val originalPriorityName = task.originalPriority?.let { original ->
+                        try {
+                            when (Priority.valueOf(original)) {
+                                Priority.LOW -> "Low"
+                                Priority.NORMAL -> "Medium"
+                                Priority.HIGH, Priority.CRITICAL -> "High"
+                            }
+                        } catch (e: Exception) {
+                            "Unknown"
+                        }
+                    } ?: "Unknown"
+
+                    val currentPriorityName = when (task.priority) {
+                        Priority.LOW -> "Low"
+                        Priority.NORMAL -> "Medium"
+                        Priority.HIGH, Priority.CRITICAL -> "High"
+                    }
+
+                    Text(
+                        text = "ℹ️ Adjusted: $originalPriorityName → $currentPriorityName",
+                        fontSize = 11.sp,
+                        color = Color(0xFF999999),
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                }
+
+                // ✅ NEW: Show override message if user changed it
+                if (userManuallyOverriddenPriority) {
+                    Text(
+                        text = "👤 Your choice (system paused auto-adjust)",
+                        fontSize = 11.sp,
+                        color = Color(0xFF4CAF50),
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(24.dp))
@@ -1131,7 +1264,7 @@ fun TaskSettingBottomSheet(
                     }
                 }
 
-// ✅ Show Voice Model Selector ONLY if Voice is selected
+                // ✅ Show Voice Model Selector ONLY if Voice is selected
                 AnimatedVisibility(
                     visible = selectedReminderMethods.contains(NotifyMethod.VOICE),
                     enter = fadeIn() + expandVertically(),
@@ -1402,6 +1535,109 @@ fun TaskSettingBottomSheet(
                 }
 
                 Spacer(modifier = Modifier.height(24.dp))
+
+                // ✅ Adaptive Intelligence Toggle
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "🤖",
+                                fontSize = 24.sp,
+                                modifier = Modifier.padding(end = 8.dp)
+                            )
+                            Text(
+                                text = "Adaptive Intelligence",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.White
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Let AI learn your best times",
+                            fontSize = 12.sp,
+                            color = Color(0xFFB0A8D4),
+                            fontStyle = FontStyle.Italic
+                        )
+                    }
+
+                    // ✅ Custom Switch matching your theme
+                    Box(
+                        modifier = Modifier
+                            .width(60.dp)
+                            .height(32.dp)
+                            .background(
+                                color = if (autoOptimizeEnabled) {
+                                    Color(0xFFB2A3E8)  // Purple when ON
+                                } else {
+                                    Color(0xFF3E3951)  // Dark when OFF
+                                },
+                                shape = RoundedCornerShape(16.dp)
+                            )
+                            .clickable {
+                                autoOptimizeEnabled = !autoOptimizeEnabled
+                            }
+                            .padding(4.dp),
+                        contentAlignment = if (autoOptimizeEnabled) Alignment.CenterEnd else Alignment.CenterStart
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(24.dp)
+                                .background(
+                                    color = if (autoOptimizeEnabled) {
+                                        Color.White
+                                    } else {
+                                        Color(0xFF6B6582)
+                                    },
+                                    shape = CircleShape
+                                )
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // ✅ Info card when toggle is ON
+                AnimatedVisibility(
+                    visible = autoOptimizeEnabled,
+                    enter = fadeIn() + expandVertically(),
+                    exit = fadeOut() + shrinkVertically()
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp)
+                            .background(
+                                color = Color(0xFF2A2438),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            .padding(12.dp)
+                    ) {
+                        Spacer(modifier = Modifier.height((-50).dp))
+                        Row(
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "💡",
+                                fontSize = 16.sp
+                            )
+                            Text(
+                                text = "System will learn when you complete tasks most often and prefer those times for scheduling.",
+                                fontSize = 12.sp,
+                                color = Color(0xFFB0A8D4),
+                                lineHeight = 16.sp
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
 
                 // ✅ Due Date Calendar
                 Column(

@@ -27,4 +27,7 @@ interface BlacklistHourDao {
 
     @Query("DELETE FROM blacklist_hours WHERE lastDismissalTimestamp < :cutoffMillis")
     suspend fun deleteOldBlacklists(cutoffMillis: Long): Int
+
+    @Query("DELETE FROM blacklist_hours WHERE id = :id")
+    suspend fun deleteById(id: Long): Int
 }

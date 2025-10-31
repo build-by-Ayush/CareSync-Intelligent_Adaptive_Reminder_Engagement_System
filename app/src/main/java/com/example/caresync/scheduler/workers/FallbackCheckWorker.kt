@@ -7,7 +7,9 @@ import androidx.work.WorkerParameters
 import com.example.caresync.data.AppDatabase
 import com.example.caresync.data.ReminderRepository
 import com.example.caresync.domain.EventTypes
+import com.example.caresync.intelligence.OptimalTimeLearner  // ✅ ADD
 import com.example.caresync.scheduler.NotificationDecisionPipeline
+import java.util.Calendar
 
 /**
  * Fallback Check Worker - Ensures minimum notification quota is met
@@ -21,6 +23,7 @@ import com.example.caresync.scheduler.NotificationDecisionPipeline
  * - Does NOT call ML model (just checks database)
  * - Runs at end of each time slot (e.g., every 10 min for "6 per hour")
  * - Scheduled via AlarmManager (can be <15 min)
+ * - ✅ NEW: Uses learned preferred times for smart fallback scheduling
  *
  * Triggered by: FallbackCheckReceiver (AlarmManager alarm)
  */
@@ -31,6 +34,7 @@ class FallbackCheckWorker(
 
     private val repo = ReminderRepository(context)
     private val eventDao = AppDatabase.get(context).reminderEventDao()
+    private val learner = OptimalTimeLearner(context)  // ✅ ADD
 
     override suspend fun doWork(): Result {
         // Get parameters from input data
@@ -72,6 +76,10 @@ class FallbackCheckWorker(
             // STEP 2: Slot is empty, fire fallback notification
             Log.d(TAG, "⚠️ Slot empty, firing fallback notification")
 
+            // ✅ NEW: Check if current time is a good time based on learned data
+            val currentHour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+            val isGoodTime = checkIfGoodTime(reminder, currentHour)
+
             // STEP 3: Run through decision pipeline (still check blocking rules)
             val pipeline = NotificationDecisionPipeline(context)
             val decision = pipeline.shouldSendNotification(
@@ -96,7 +104,8 @@ class FallbackCheckWorker(
                     reminder = reminder,
                     actualTone = actualTone,
                     slotStart = slotStart,
-                    slotEnd = slotEnd
+                    slotEnd = slotEnd,
+                    isSmartFallback = isGoodTime  // ✅ Track if this was smart or random
                 )
 
                 eventDao.insert(event)
@@ -109,7 +118,8 @@ class FallbackCheckWorker(
                     personalizedMessage
                 )
 
-                Log.d(TAG, "🔔 Fallback notification fired with personalized message")
+                val fallbackType = if (isGoodTime) "smart (learned time)" else "random"
+                Log.d(TAG, "🔔 Fallback notification fired ($fallbackType) at hour $currentHour")
             } else {
                 // Blocked by pipeline
                 Log.d(TAG, "🚫 Fallback blocked by ${decision.blockingRule}: ${decision.reason}")
@@ -121,6 +131,55 @@ class FallbackCheckWorker(
         } catch (e: Exception) {
             Log.e(TAG, "❌ Fallback check failed for task $reminderId", e)
             return Result.retry()
+        }
+    }
+
+    /**
+     * ✅ NEW: Check if current hour is a good time based on learned data
+     *
+     * Returns true if:
+     * - Adaptive layer enabled AND
+     * - Current hour is in learned preferred times
+     */
+    private suspend fun checkIfGoodTime(
+        reminder: com.example.caresync.domain.ReminderSettings,
+        currentHour: Int
+    ): Boolean {
+        // ✅ CHANGED: Always use smart learning, no toggle check
+        // Smart time learning is independent of the optimization toggle
+
+        return try {
+            // Check if current hour is a preferred time
+            learner.isGoodTimeNow(reminder.id)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to check if good time, assuming false", e)
+            false
+        }
+    }
+
+    /**
+     * ✅ NEW: Get suggested fallback hour from learned data
+     *
+     * Used when we want to schedule a future fallback at a better time
+     * (Currently logged for analytics, not actively used)
+     */
+    private suspend fun getSuggestedFallbackHour(
+        reminder: com.example.caresync.domain.ReminderSettings
+    ): Int? {
+        // ✅ CHANGED: Always use smart learning, no toggle check
+        // Smart time learning is independent of the optimization toggle
+
+        return try {
+            val bestHours = learner.getBestHours(
+                reminderId = reminder.id,
+                minConfidence = 0.3f,
+                minSamples = 2,
+                limit = 1
+            )
+            bestHours.firstOrNull()?.hourOfDay
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to get suggested fallback hour", e)
+            null
         }
     }
 
@@ -149,27 +208,29 @@ class FallbackCheckWorker(
 
     /**
      * Create event with fallback metadata
+     * ✅ UPDATED: Add isSmartFallback flag to metadata
      */
     private fun createEventWithContext(
         reminderId: Long,
         reminder: com.example.caresync.domain.ReminderSettings,
         actualTone: String,
         slotStart: Long,
-        slotEnd: Long
+        slotEnd: Long,
+        isSmartFallback: Boolean  // ✅ ADD
     ): com.example.caresync.data.ReminderEventEntity {
-        val now = java.util.Calendar.getInstance()
+        val now = Calendar.getInstance()
 
         return com.example.caresync.data.ReminderEventEntity(
             reminderId = reminderId,
-            eventType = com.example.caresync.domain.EventTypes.TRIGGERED,
+            eventType = EventTypes.TRIGGERED,
             timestamp = System.currentTimeMillis(),
 
             // Time context
-            hourOfDay = now.get(java.util.Calendar.HOUR_OF_DAY),
-            dayOfWeek = now.get(java.util.Calendar.DAY_OF_WEEK) - 1,
-            isWeekend = now.get(java.util.Calendar.DAY_OF_WEEK) in listOf(
-                java.util.Calendar.SATURDAY,
-                java.util.Calendar.SUNDAY
+            hourOfDay = now.get(Calendar.HOUR_OF_DAY),
+            dayOfWeek = now.get(Calendar.DAY_OF_WEEK) - 1,
+            isWeekend = now.get(Calendar.DAY_OF_WEEK) in listOf(
+                Calendar.SATURDAY,
+                Calendar.SUNDAY
             ),
 
             // Device context (basic - fallback doesn't collect full context)
@@ -186,10 +247,10 @@ class FallbackCheckWorker(
 
             // ML model data
             modelConfidence = null,  // No ML model for fallback
-            triggerSource = "FALLBACK",
+            triggerSource = if (isSmartFallback) "FALLBACK_SMART" else "FALLBACK",  // ✅ TRACK TYPE
 
-            // Metadata JSON
-            metadataJson = """{"source":"FALLBACK","slotStart":$slotStart,"slotEnd":$slotEnd}"""
+            // ✅ UPDATED: Metadata JSON with smart flag
+            metadataJson = """{"source":"FALLBACK","slotStart":$slotStart,"slotEnd":$slotEnd,"smartFallback":$isSmartFallback}"""
         )
     }
 

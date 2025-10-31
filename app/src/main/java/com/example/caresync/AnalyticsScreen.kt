@@ -25,6 +25,10 @@ import com.example.caresync.analytics.viewmodel.AnalyticsViewModel
 import kotlin.math.sin
 import kotlin.math.PI
 import androidx.compose.foundation.horizontalScroll
+import com.example.caresync.analytics.RiskDetectionSection
+import com.example.caresync.analytics.RiskDetectionModal
+import com.example.caresync.intelligence.riskdetection.RiskSuggestion
+
 
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -181,7 +185,8 @@ fun AnalyticsScreen(navController: NavHostController) {
                 // Success state - Show dashboard
                 DashboardContent(
                     uiState = uiState,
-                    onDateRangeChange = { viewModel.changeDateRange(it) }
+                    onDateRangeChange = { viewModel.changeDateRange(it) },
+                    viewModel = viewModel
                 )
             }
         }
@@ -191,9 +196,11 @@ fun AnalyticsScreen(navController: NavHostController) {
 @Composable
 private fun DashboardContent(
     uiState: com.example.caresync.analytics.viewmodel.AnalyticsUiState,
-    onDateRangeChange: (com.example.caresync.analytics.viewmodel.DateRange) -> Unit
+    onDateRangeChange: (com.example.caresync.analytics.viewmodel.DateRange) -> Unit,
+    viewModel: AnalyticsViewModel
 ) {
     val stats = uiState.statistics
+    val riskSuggestions by viewModel.riskSuggestions.collectAsState()  // ✅ ADD THIS
 
     Column(
         modifier = Modifier
@@ -352,7 +359,24 @@ private fun DashboardContent(
             modifier = Modifier.fillMaxWidth()
         )
 
+        // ✅ NEW: RISK DETECTION SECTION (6th component)
+        Divider(modifier = Modifier.padding(vertical = 8.dp))
+        RiskDetectionSection(
+            atRiskCount = uiState.atRiskCount,
+            riskSuggestions = riskSuggestions,
+            onViewDetails = { viewModel.toggleRiskDetails() }
+        )
+
+        // ✅ NEW: Risk Details Modal
+        if (uiState.showRiskDetails && riskSuggestions.isNotEmpty()) {
+            RiskDetectionModal(
+                riskSuggestions = riskSuggestions,
+                onDismiss = { viewModel.closeRiskDetails() }
+            )
+        }
+
         Spacer(modifier = Modifier.height(32.dp))
+
         // After collecting uiState
         LaunchedEffect(uiState) {
             Log.d("DASHBOARD_DEBUG", "Stats: ${uiState.statistics}")

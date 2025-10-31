@@ -66,27 +66,31 @@ class MLCheckWorker(
             val mlDecision = callMLModel(deviceContext)
             Log.d(TAG, "🤖 ML decision: ${mlDecision.shouldFire} (confidence: ${mlDecision.confidence})")
 
+            // ✅ STEP 2.5: Boost confidence if in preferred time
+            val boostedDecision = boostConfidenceIfPreferredTime(mlDecision, reminder)
+            Log.d(TAG, "🤖 Boosted decision: ${boostedDecision.shouldFire} (confidence: ${boostedDecision.confidence})")
+
             // STEP 3: Check min occurrence quota
             val quotaCheck = checkMinOccurrenceQuota(reminder)
             Log.d(TAG, "📊 Quota: ${quotaCheck.fired}/${quotaCheck.required} (force: ${quotaCheck.shouldForce})")
 
             // STEP 4: Decide whether to fire
-            val shouldFire = mlDecision.shouldFire || quotaCheck.shouldForce
+            val shouldFire = boostedDecision.shouldFire || quotaCheck.shouldForce
 
             if (shouldFire) {
                 // STEP 5: Run through decision pipeline
                 val pipeline = NotificationDecisionPipeline(context)
                 val decision = pipeline.shouldSendNotification(
                     reminder,
-                    mlPrediction = mlDecision.shouldFire,
-                    mlConfidence = mlDecision.confidence,
-                    bypassCooldown = false,  // ✅ ADD: Apply cooldown for ML checks
-                    triggerSource = "ML_CHECK"  // ✅ ADD: Mark as ML check
+                    mlPrediction = boostedDecision.shouldFire,
+                    mlConfidence = boostedDecision.confidence,
+                    bypassCooldown = false,
+                    triggerSource = "ML_CHECK"
                 )
 
                 if (decision.shouldSend) {
                     // Fire notification with full context
-                    fireNotification(reminder, mlDecision.confidence, deviceContext)  // ✅ ADD deviceContext
+                    fireNotification(reminder, boostedDecision.confidence, deviceContext)
                     Log.d(TAG, "🔔 Notification fired for task: $reminderId")
                 }
                 else {
@@ -488,6 +492,38 @@ class MLCheckWorker(
         )
     }
 
+    /**
+     * ✅ NEW: Boost ML confidence if we're in a preferred time
+     */
+    private suspend fun boostConfidenceIfPreferredTime(
+        baseDecision: MLDecision,
+        reminder: com.example.caresync.domain.ReminderSettings
+    ): MLDecision {
+        // ✅ CHANGED: Smart time learning always happens, no toggle check
+        // Boost ML confidence if we're in a preferred time (independent of optimization toggle)
+
+        try {
+            val currentHour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+            val preferredTimesDao = AppDatabase.get(context).preferredTimesDao()
+            val preferredTime = preferredTimesDao.getPreferredTime(reminder.id, currentHour)
+
+            if (preferredTime != null && preferredTime.completionRate > 0.6f) {
+                // ✅ Boost confidence by 0.2 if in strong preferred time
+                val boostedConfidence = minOf(baseDecision.confidence + 0.2f, 1.0f)
+
+                Log.d(TAG, "🚀 Boosted ML confidence: ${baseDecision.confidence} → $boostedConfidence (preferred time $currentHour)")
+
+                return baseDecision.copy(
+                    confidence = boostedConfidence,
+                    shouldFire = boostedConfidence >= 0.5f  // Recalculate based on boosted confidence
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to boost confidence", e)
+        }
+
+        return baseDecision
+    }
     /**
      * STEP 5: Fire notification
      */

@@ -76,6 +76,18 @@ data class ReminderEntity(
     @ColumnInfo(name = "send_struggling_alerts")
     val sendStrugglingAlerts: Boolean = false,
 
+    // Adaptive Intelligence Layer
+    val autoOptimizeEnabled: Boolean = true,  // Can be disabled per task
+    val lastOptimizedAt: Long = 0L,          // When adaptive layer last ran
+
+    // ✅ NEW: Frequency optimization fields
+    val originalMinOccurrence: Int? = null,
+    val frequencyMultiplier: Float = 1.0f,
+    val lastFrequencyOptimization: Long = 0,
+
+    val originalPriority: String? = null,            // store raw name for safety (or Priority? if preferred)
+    val priorityAutoAdjusted: Boolean = false,       // or INT if db forces, but map as Boolean in code
+
     // audit
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()

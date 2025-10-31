@@ -4,23 +4,14 @@ import android.content.Context
 import android.util.Log
 import androidx.work.*
 import com.example.caresync.domain.ReminderSettings
+import com.example.caresync.intelligence.OptimalTimeLearner
+import kotlinx.coroutines.runBlocking
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
 
-/**
- * LAYER 3D: Weekday Scheduler
- *
- * Responsibilities:
- * - Handle Weekdays mode (selected days + N notifications per day)
- * - Generate multiple random times per day
- * - Distribute across morning/afternoon/evening periods
- *
- * Logic:
- * - User sets: "Saturday, Sunday" + "3 notifications per day"
- * - Generates 3 random times for each selected day
- * - Schedules multiple WorkManager jobs
- */
 class WeekdayScheduler(private val context: Context) {
+
+    private val learner = OptimalTimeLearner(context)
 
     /**
      * Schedule multiple notifications for selected weekdays
@@ -38,8 +29,8 @@ class WeekdayScheduler(private val context: Context) {
         // Find next matching day
         val nextDay = findNextMatchingDay(daysOfWeek)
 
-        // Generate N random times for that day
-        val triggers = generateRandomTimesForDay(nextDay, notificationsPerDay)
+        // Generate smart times using learned data
+        val triggers = generateSmartRandomTimesForDay(reminder, nextDay, notificationsPerDay)
 
         // Schedule each trigger
         triggers.forEachIndexed { index, triggerTime ->
@@ -68,8 +59,93 @@ class WeekdayScheduler(private val context: Context) {
     }
 
     /**
-     * Generate N random times for a specific day
+     * ✅ UPDATED: Generate N smart times using weighted selection
+     *
+     * Strategy:
+     * - ≥count good hours → Use all learned (enough variety)
+     * - 1 to (count-1) good hours → Mix learned + random
+     * - 0 good hours → Fully random
+     */
+    private fun generateSmartRandomTimesForDay(
+        reminder: ReminderSettings,
+        day: Calendar,
+        count: Int
+    ): List<Long> {
+        // ✅ CHANGED: Always use smart learning for scheduling, no toggle check
+        // Smart time learning is independent of the optimization toggle
+
+        // Try to get learned best hours
+        val bestHours = runBlocking {
+            try {
+                learner.getBestHours(
+                    reminderId = reminder.id,
+                    minConfidence = 0.4f,
+                    minSamples = 2,
+                    limit = count + 2  // Get a few extra for variety
+                )
+            } catch (e: Exception) {
+                Log.w("WEEKDAY_SCHEDULER", "Failed to get learned hours, using random", e)
+                emptyList()
+            }
+        }
+
+        // ✅ DECISION LOGIC
+        when {
+            bestHours.size >= count -> {
+                // Enough learned hours to satisfy count - use all learned
+                val times = mutableListOf<Long>()
+                val selectedHours = bestHours.shuffled().take(count)
+
+                selectedHours.forEach { preferredTime ->
+                    val target = day.clone() as Calendar
+                    target.set(Calendar.HOUR_OF_DAY, preferredTime.hourOfDay)
+                    target.set(Calendar.MINUTE, (0..59).random())
+                    target.set(Calendar.SECOND, 0)
+                    target.set(Calendar.MILLISECOND, 0)
+                    times.add(target.timeInMillis)
+                }
+
+                Log.d("WEEKDAY_SCHEDULER", "✨ All smart: ${selectedHours.size} learned times (from ${bestHours.size} available)")
+                return times.sorted()
+            }
+
+            bestHours.isNotEmpty() -> {
+                // Have some learned hours but not enough - mix learned + random
+                val times = mutableListOf<Long>()
+
+                // Use all learned hours
+                bestHours.forEach { preferredTime ->
+                    val target = day.clone() as Calendar
+                    target.set(Calendar.HOUR_OF_DAY, preferredTime.hourOfDay)
+                    target.set(Calendar.MINUTE, (0..59).random())
+                    target.set(Calendar.SECOND, 0)
+                    target.set(Calendar.MILLISECOND, 0)
+                    times.add(target.timeInMillis)
+                }
+
+                // Fill remaining with random
+                val remaining = count - bestHours.size
+                if (remaining > 0) {
+                    val randomTimes = generateRandomTimesForDay(day, remaining)
+                    times.addAll(randomTimes)
+                }
+
+                Log.d("WEEKDAY_SCHEDULER", "✨ Mixed: ${bestHours.size} learned + $remaining random")
+                return times.sorted()
+            }
+
+            else -> {
+                // No learned data yet - fully random
+                Log.d("WEEKDAY_SCHEDULER", "No learned data yet, using random distribution")
+                return generateRandomTimesForDay(day, count)
+            }
+        }
+    }
+
+    /**
+     * ORIGINAL: Generate N random times for a specific day
      * Distributes across morning/afternoon/evening periods
+     * Used as fallback when no learned data available
      */
     private fun generateRandomTimesForDay(day: Calendar, count: Int): List<Long> {
         val periods = listOf(
@@ -101,7 +177,7 @@ class WeekdayScheduler(private val context: Context) {
             times.add(target.timeInMillis)
         }
 
-        return times.sorted()  // Sort chronologically
+        return times.sorted()
     }
 
     /**

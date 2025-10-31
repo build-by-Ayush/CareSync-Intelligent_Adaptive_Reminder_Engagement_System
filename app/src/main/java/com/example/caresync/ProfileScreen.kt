@@ -39,15 +39,14 @@ import com.example.caresync.data.ProfileDataStore
 
 @Composable
 fun ProfileScreen(navController: NavController) {
-    var showTopImage by remember { mutableStateOf(false)
-    }
+    var showTopImage by remember { mutableStateOf(false) }
     var usernameError by remember { mutableStateOf(false) }
     var ageError by remember { mutableStateOf(false) }
-    var purposeError by remember { mutableStateOf(false) }
+    var adaptiveLayerError by remember { mutableStateOf(false) }
 
     var username by remember { mutableStateOf("") }
     var age by remember { mutableStateOf("") }
-    var purpose by remember { mutableStateOf("") }
+    var adaptiveLayerChoice by remember { mutableStateOf("") }
 
     // Trigger animation after slight delay
     LaunchedEffect(Unit) {
@@ -59,30 +58,29 @@ fun ProfileScreen(navController: NavController) {
         .fillMaxSize()
         .zIndex(0f)) {
 
-        // ✅ Background Image stretched to fill
+        // Background Image stretched to fill
         Image(
-            painter = painterResource(id = R.drawable.profilepage), // your bg image
+            painter = painterResource(id = R.drawable.profilepage),
             contentDescription = "Background",
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()
         )
 
-
-        // ✅ Top image slide-in
+        // Top image slide-in
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(250.dp)
-                .zIndex(1f) // higher than background
+                .zIndex(1f)
                 .align(Alignment.TopCenter)
         ) {
             AnimatedVisibility(
                 visible = showTopImage,
                 enter = slideInVertically(
                     initialOffsetY = { fullHeight -> -fullHeight },
-                    animationSpec = tween(durationMillis = 1100) // ← controls slide speed
+                    animationSpec = tween(durationMillis = 1100)
                 ) + fadeIn(
-                    animationSpec = tween(durationMillis = 1100) // ← controls fade speed
+                    animationSpec = tween(durationMillis = 1100)
                 )
             ) {
                 Image(
@@ -98,15 +96,15 @@ fun ProfileScreen(navController: NavController) {
 
         Box(modifier = Modifier
             .fillMaxSize()
-            .padding(top = 0.dp) // make space for top image
-            .zIndex(2f)             // highest priority for interaction
+            .padding(top = 0.dp)
+            .zIndex(2f)
         ) {
             Column(
                 modifier = Modifier
-                    .fillMaxSize()  // ✅ Full height, not just fillMaxWidth
+                    .fillMaxSize()
                     .verticalScroll(scrollState)
                     .padding(horizontal = 30.dp)
-                    .padding(top = 400.dp), // below the header image
+                    .padding(top = 400.dp),
                 verticalArrangement = Arrangement.spacedBy(30.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
@@ -114,74 +112,78 @@ fun ProfileScreen(navController: NavController) {
                 Column(
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    // 🔴 Error Text (visible or invisible placeholder)
+                    // ✅ NEW: Title heading for Username (same style as Adaptive Intelligence)
                     Text(
-                        text = if (usernameError) "            Username is required" else "",
-                        color = Color.Red,
-                        fontSize = 14.sp,
-                        modifier = Modifier
-                            .height(20.dp) // fixed space for error
-                            .padding(start = 150.dp)
+                        text = if (usernameError) "Username is required" else "Profile Information",
+                        color = if (usernameError) Color.Red else Color(0xFFB2A3E8),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
                     )
 
-                    // ✅ Your input field
                     CustomTextField(
                         value = username,
-                        onValueChange = { username = it },
-                        placeholder = "  Username",
+                        onValueChange = { input ->
+                            // ✅ Limit to 25 characters
+                            if (input.length <= 25) {
+                                username = input
+                            }
+                        },
+                        placeholder = " Enter name",  // ✅ Updated placeholder
                         iconId = R.drawable.textlogo1
                     )
                 }
-
 
                 // 2️⃣ Age
                 Column(
                     modifier = Modifier.fillMaxWidth()
                 ) {
+                    // ✅ NEW: Title heading for Age (same style as Adaptive Intelligence)
                     Text(
-                        text = if (ageError) "                       Age is required" else "",
-                        color = Color.Red,
-                        fontSize = 14.sp,
-                        modifier = Modifier
-                            .height(20.dp)
-                            .padding(start = 150.dp)
+                        text = if (ageError) "Age is required" else "Age Information",
+                        color = if (ageError) Color.Red else Color(0xFFB2A3E8),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
                     )
 
                     CustomTextField(
                         value = age,
                         onValueChange = { input ->
-                            if (input.all { it.isDigit() }) {   // allow only digits
+                            if (input.all { it.isDigit() }) {
                                 age = input
                             }
                         },
-                        placeholder = "  Age",
+                        placeholder = " Enter age",  // ✅ Updated placeholder
                         iconId = R.drawable.textlogo2
                     )
                 }
 
-
-                // 3 Purpose
+                // 3️⃣ Adaptive Intelligence Layer
                 Column(
                     modifier = Modifier.fillMaxWidth()
                 ) {
+                    // ✅ Warning on LEFT (like name and age)
                     Text(
-                        text = if (purposeError) "            Please select a purpose" else "",
-                        color = Color.Red,
-                        fontSize = 14.sp,
-                        modifier = Modifier
-                            .height(20.dp)
-                            .padding(start = 150.dp)
+                        text = if (adaptiveLayerError) "Please select a mode" else "Adaptive Intelligence",
+                        color = if (adaptiveLayerError) Color.Red else Color(0xFFB2A3E8),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
                     )
 
-                    PurposeSelector(
-                        selectedOption = purpose,
-                        onOptionSelected = { purpose = it }
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    AdaptiveLayerSelector(
+                        selectedOption = adaptiveLayerChoice,
+                        onOptionSelected = {
+                            adaptiveLayerChoice = it
+                            adaptiveLayerError = false  // Clear error when selected
+                        }
                     )
                 }
-
             }
         }
-
 
         // Animated Button
         Column(
@@ -195,7 +197,7 @@ fun ProfileScreen(navController: NavController) {
             var visible by remember { mutableStateOf(false) }
 
             LaunchedEffect(Unit) {
-                delay(600)  // optional delay for animation
+                delay(600)
                 visible = true
             }
 
@@ -215,17 +217,29 @@ fun ProfileScreen(navController: NavController) {
                         // Reset errors first
                         usernameError = username.isBlank()
                         ageError = age.isBlank()
-                        purposeError = purpose.isBlank()
+                        adaptiveLayerError = adaptiveLayerChoice.isBlank()
 
-                        if (!usernameError && !ageError && !purposeError) {
-                            // ✅ Save profile data
-                            scope.launch {
-                                profileDataStore.saveProfile(username, age, purpose)
+                        if (!usernameError && !ageError && !adaptiveLayerError) {
+                            // Convert choice to boolean
+                            val adaptiveLayerEnabled = when (adaptiveLayerChoice) {
+                                "ON" -> true
+                                "OFF" -> false
+                                else -> true  // Default ON
                             }
 
-                            // Navigate to main directly (no need to pass args anymore)
+                            // Save profile data with adaptive layer setting
+                            scope.launch {
+                                profileDataStore.saveProfile(
+                                    username,
+                                    age,
+                                    "User",  // Purpose no longer used
+                                    adaptiveLayerEnabled
+                                )
+                            }
+
+                            // Navigate to main
                             navController.navigate("main") {
-                                popUpTo("profile") { inclusive = true } // removes profile from backstack
+                                popUpTo("profile") { inclusive = true }
                             }
                         }
                     },
@@ -277,7 +291,7 @@ fun CustomTextField(
         value = value,
         onValueChange = onValueChange,
         placeholder = {
-            Text(placeholder, color = Color(0xFFDCD7D7) , fontSize = 21.sp)
+            Text(placeholder, color = Color(0xFFDCD7D7), fontSize = 21.sp)
         },
         leadingIcon = {
             Image(
@@ -315,11 +329,11 @@ fun CustomTextField(
 }
 
 @Composable
-fun PurposeSelector(
+fun AdaptiveLayerSelector(
     selectedOption: String,
     onOptionSelected: (String) -> Unit
 ) {
-    val options = listOf("Study", "Workout")
+    val options = listOf("ON", "OFF")
 
     Row(
         horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -332,14 +346,14 @@ fun PurposeSelector(
                     .weight(1f)
                     .height(65.dp)
                     .background(
-                        color = if (selectedOption == option) Color(0xFFB2A3E8) else Color(0xFF3E3951),
+                        color = if (isSelected) Color(0xFFB2A3E8) else Color(0xFF3E3951),
                         shape = RoundedCornerShape(22.dp)
                     )
                     .clickable { onOptionSelected(option) },
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = option,
+                    text = if (option == "ON") "ON" else "OFF",
                     color = if (isSelected) Color(0xFF3B3A3A) else Color(0xFFDCD7D7),
                     fontSize = 21.sp,
                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
@@ -348,5 +362,3 @@ fun PurposeSelector(
         }
     }
 }
-
-

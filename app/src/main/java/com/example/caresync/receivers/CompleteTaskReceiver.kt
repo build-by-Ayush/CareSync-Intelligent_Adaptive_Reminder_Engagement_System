@@ -172,6 +172,27 @@ class CompleteTaskReceiver : BroadcastReceiver() {
                     Log.d("APP_BLOCK", "🚫 Blocked $appName ($packageName) for 30 minutes")
                 }
             }
+
+            // ✅ FIXED: Learn from completion (only if NOT snoozed retrigger)
+            try {
+                val isSnoozedRetrigger = intent.getBooleanExtra("isSnoozedRetrigger", false)  // ✅ ADD THIS LINE
+
+                // ✅ SKIP LEARNING IF SNOOZED RETRIGGER
+                if (isSnoozedRetrigger) {
+                    Log.d("LEARNING_FILTER", "⏭️ Skipping snoozed retrigger for task $reminderId - NOT learning from this completion")
+                    // Don't call OptimalTimeLearner - continue to next section
+                } else {
+                    val currentHour = java.util.Calendar.getInstance()
+                        .get(java.util.Calendar.HOUR_OF_DAY)
+
+                    com.example.caresync.intelligence.OptimalTimeLearner(context)
+                        .updatePreferredTimes(reminderId, currentHour, completed = true)
+
+                    Log.d("LEARNING_FILTER", "✅ Learning from ORIGINAL completion: task $reminderId at hour $currentHour")
+                }
+            } catch (e: Exception) {
+                Log.e("ADAPTIVE_LAYER", "Failed to update preferred times", e)
+            }
         }
 
         // Cancel notification

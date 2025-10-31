@@ -44,7 +44,14 @@ fun ReminderEntity.toDomain(): ReminderSettings = ReminderSettings(
     shareProgressContactPhone = shareProgressContactPhone,
     sendDailyReport = sendDailyReport,
     sendWeeklyReport = sendWeeklyReport,
-    sendStrugglingAlerts = sendStrugglingAlerts
+    sendStrugglingAlerts = sendStrugglingAlerts,
+    autoOptimizeEnabled = autoOptimizeEnabled,
+    lastOptimizedAt = lastOptimizedAt,
+    originalMinOccurrence = originalMinOccurrence,
+    frequencyMultiplier = frequencyMultiplier,
+    lastFrequencyOptimization = lastFrequencyOptimization,
+    originalPriority = originalPriority, // String? → map as needed
+    priorityAutoAdjusted = priorityAutoAdjusted // Converts int/boolean: 0/false
 )
 
 fun ReminderSettings.toEntity(): ReminderEntity = ReminderEntity(
@@ -89,7 +96,14 @@ fun ReminderSettings.toEntity(): ReminderEntity = ReminderEntity(
     shareProgressContactPhone = shareProgressContactPhone,
     sendDailyReport = sendDailyReport,
     sendWeeklyReport = sendWeeklyReport,
-    sendStrugglingAlerts = sendStrugglingAlerts
+    sendStrugglingAlerts = sendStrugglingAlerts,
+    autoOptimizeEnabled = autoOptimizeEnabled,
+    lastOptimizedAt = lastOptimizedAt,
+    originalMinOccurrence = originalMinOccurrence,
+    frequencyMultiplier = frequencyMultiplier,
+    lastFrequencyOptimization = lastFrequencyOptimization,
+    originalPriority = originalPriority,
+    priorityAutoAdjusted = priorityAutoAdjusted // (Room handles boolean → int automatically if needed)
 )
 
 // ✅ ADD THIS HELPER FUNCTION AT THE BOTTOM

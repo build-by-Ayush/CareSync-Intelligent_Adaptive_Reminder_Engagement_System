@@ -167,18 +167,8 @@ class NotificationDecisionPipeline(private val context: Context) {
         }
 
         // ==========================================
-        // CHECK 8: Context-Aware (Avoid During Distraction Apps)
+        // CHECK 8: Context-Aware (Enhance During Distraction Apps) [Removed]
         // ==========================================
-        val activeCategory = getActiveAppCategory(context)
-        val distractionCategories = listOf("Social Media", "Games", "Entertainment", "Shopping")
-        if (activeCategory in distractionCategories) {
-            return DecisionResult(
-                shouldSend = false,
-                reason = "User is in distraction app category: $activeCategory",
-                blockingRule = "DISTRACTION_APP",
-                metadata = mapOf("category" to activeCategory)
-            )
-        }
 
         // ==========================================
         // CHECK 9: Device State (Low Battery, Driving, etc.)
