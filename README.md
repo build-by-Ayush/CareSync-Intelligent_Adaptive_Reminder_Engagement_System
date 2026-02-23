@@ -54,23 +54,43 @@ Enabled? → ML Prediction? → Confidence? → Blacklisted? → Cooldown? → Q
 *Results from synthetic behavioral data. Real-world performance estimated 85-90% based on domain literature.*
 
 ## 🛠️ Tech Stack
-  -📱 Frontend: Jetpack Compose, Material 3
-  
-  -🎯 Architecture: MVVM + Repository Pattern
-
-  -🗄️ Database: Room (SQLite)
-  
-  -📅 Scheduling: WorkManager
-  
-  -🤖 ML Inference: ONNX Runtime
-  
-  -📱 Language: Kotlin
+  - 📱 Frontend: Jetpack Compose, Material 3
+  - 🎯 Architecture: MVVM + Repository Pattern
+  - 🗄️ Database: Room (SQLite)
+  - 📅 Scheduling: WorkManager
+  - 🤖 ML Inference: ONNX Runtime
+  - 📱 Language: Kotlin
   
 ## 🎯 How It Works
 
 # Flowchart
+<p align="center">
+  <img src="Images/Flowchart.png" width="800">
+</p>
+
+# Table Schema
+<p align="center">
+  <img src="Images/er_diagram.png" width="800">
+</p>
 
 # Prerequisites
--Android Studio Koala (2024.1.1) or later
--Android SDK API 34+
--Min SDK 24 (Android 7.0)
+- Android Studio Koala (2024.1.1) or later
+- Android SDK API 34+
+- Min SDK 24 (Android 7.0)
+
+# Output
+<p align="center">
+  <img src="Images/Main Page.jpg" width="200">
+  <img src="Images/Dashboard Page.jpg" width="200">
+  <img src="Images/Dashboard page 2.jpg" width="200">
+  <img src="Images/Settings Pane 1.jpg" width="200">
+  <img src="Images/Settings Pane 2.jpg" width="200">
+  <img src="Images/Profile Panel.jpg" width="200">
+  <img src="Images/Notification.jpg" width="200">
+</p>
+
+# Work Remaining
+
+- ML Notification Function Fix
+- App Size and Design Fix
+- More App Optimization
