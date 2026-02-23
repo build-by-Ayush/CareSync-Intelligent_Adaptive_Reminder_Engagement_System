@@ -6,6 +6,7 @@ import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -16,8 +17,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -29,14 +31,27 @@ import androidx.lifecycle.lifecycleScope
 import com.example.caresync.data.ProfileDataStore
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import android.net.Uri
 
-
-
+/**
+ * Splash Activity - Permission Flow
+ *
+ * Responsibilities:
+ * - Block navigation until ALL permissions are granted
+ * - Request permissions in sequence
+ * - Save permission state for next launch
+ * - Navigate to MainActivity only when done
+ *
+ * Thread-safe: Uses @Volatile flags and synchronized blocks
+ */
 class SplashActivity : ComponentActivity() {
 
+    // ✅ THREAD-SAFE: Volatile flags prevent race conditions
+    @Volatile
     private var hasNavigated = false
+
+    @Volatile
     private var isRequestingPermission = false
+
     private var lastPermissionRequest = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -69,6 +84,7 @@ class SplashActivity : ComponentActivity() {
         super.onResume()
         Log.d(TAG, "📱 Activity resumed")
 
+        // ✅ FIXED: Check if we were waiting for a permission dialog to close
         if (isRequestingPermission && !hasNavigated) {
             isRequestingPermission = false
             lastPermissionRequest = ""
@@ -85,6 +101,8 @@ class SplashActivity : ComponentActivity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
+        Log.d(TAG, "📋 onRequestPermissionsResult: requestCode=$requestCode")
 
         when (requestCode) {
             REQUEST_NOTIFICATION, REQUEST_CONTACTS -> {
@@ -109,7 +127,7 @@ class SplashActivity : ComponentActivity() {
                 Manifest.permission.POST_NOTIFICATIONS
             ) == PackageManager.PERMISSION_GRANTED
         } else {
-            true
+            true  // Older APIs don't need this permission
         }
     }
 
@@ -126,11 +144,11 @@ class SplashActivity : ComponentActivity() {
                 val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
                 alarmManager.canScheduleExactAlarms()
             } else {
-                true
+                true  // Older APIs don't need this permission
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error checking exact alarm permission", e)
-            true
+            true  // Fail open for older APIs
         }
     }
 
@@ -145,7 +163,7 @@ class SplashActivity : ComponentActivity() {
                 )
                 mode == AppOpsManager.MODE_ALLOWED
             } else {
-                false
+                false  // Older APIs don't have this
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error checking usage stats permission", e)
@@ -157,7 +175,7 @@ class SplashActivity : ComponentActivity() {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             Settings.canDrawOverlays(this)
         } else {
-            true
+            true  // Older APIs don't need this permission
         }
     }
 
@@ -179,6 +197,7 @@ class SplashActivity : ComponentActivity() {
                 REQUEST_NOTIFICATION
             )
         } else {
+            // Older APIs - skip this permission
             isRequestingPermission = false
             lastPermissionRequest = ""
             Handler(Looper.getMainLooper()).postDelayed({
@@ -212,7 +231,9 @@ class SplashActivity : ComponentActivity() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
                 startActivity(intent)
+                // onResume will continue permission flow
             } else {
+                // Older APIs - skip this permission
                 isRequestingPermission = false
                 lastPermissionRequest = ""
                 Handler(Looper.getMainLooper()).postDelayed({
@@ -240,13 +261,25 @@ class SplashActivity : ComponentActivity() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
                 startActivity(intent)
+                // ✅ FIXED: DON'T call savePermissionsAndNavigate here!
+                // Just return - onResume will continue permission flow
             } else {
-                Log.d(TAG, "⏭️ Usage stats not available, proceeding...")
-                savePermissionsAndNavigate()
+                // ✅ FIXED: Older APIs - skip this permission, don't bypass
+                Log.d(TAG, "⏭️ API < LOLLIPOP, usage stats not available")
+                isRequestingPermission = false
+                lastPermissionRequest = ""
+                Handler(Looper.getMainLooper()).postDelayed({
+                    checkAndRequestNextPermission()
+                }, 300)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error requesting usage stats permission", e)
-            savePermissionsAndNavigate()
+            // ✅ FIXED: Don't bypass, just retry
+            isRequestingPermission = false
+            lastPermissionRequest = ""
+            Handler(Looper.getMainLooper()).postDelayed({
+                checkAndRequestNextPermission()
+            }, 300)
         }
     }
 
@@ -263,7 +296,9 @@ class SplashActivity : ComponentActivity() {
                 Uri.parse("package:$packageName")
             )
             startActivity(intent)
+            // onResume will continue permission flow
         } else {
+            // Older APIs - skip this permission
             isRequestingPermission = false
             lastPermissionRequest = ""
             Handler(Looper.getMainLooper()).postDelayed({
@@ -272,26 +307,30 @@ class SplashActivity : ComponentActivity() {
         }
     }
 
-
     // ========================================
     // FLOW CONTROL METHODS
     // ========================================
 
     private fun checkAndRequestNextPermission() {
-        if (hasNavigated || isRequestingPermission) return
+        // ✅ THREAD-SAFE: Use synchronized block
+        synchronized(this) {
+            if (hasNavigated || isRequestingPermission) {
+                return
+            }
+        }
 
         val notificationGranted = isNotificationPermissionGranted()
         val contactsGranted = isContactsPermissionGranted()
         val alarmGranted = isExactAlarmPermissionGranted()
         val usageGranted = isUsageStatsPermissionGranted()
-        val overlayGranted = isOverlayPermissionGranted()  // ✅ ADD
+        val overlayGranted = isOverlayPermissionGranted()
 
         Log.d(TAG, "🔍 Permission status:")
         Log.d(TAG, "   Notification: $notificationGranted")
         Log.d(TAG, "   Contacts: $contactsGranted")
         Log.d(TAG, "   Exact Alarm: $alarmGranted")
         Log.d(TAG, "   Usage Stats: $usageGranted")
-        Log.d(TAG, "   Overlay: $overlayGranted")  // ✅ ADD
+        Log.d(TAG, "   Overlay: $overlayGranted")
 
         when {
             !notificationGranted && lastPermissionRequest != "NOTIFICATION" -> {
@@ -306,7 +345,7 @@ class SplashActivity : ComponentActivity() {
             !usageGranted && lastPermissionRequest != "USAGE_STATS" -> {
                 requestUsageStatsPermission()
             }
-            !overlayGranted && lastPermissionRequest != "OVERLAY" -> {  // ✅ ADD
+            !overlayGranted && lastPermissionRequest != "OVERLAY" -> {
                 requestOverlayPermission()
             }
             else -> {
@@ -317,12 +356,15 @@ class SplashActivity : ComponentActivity() {
     }
 
     private fun savePermissionsAndNavigate() {
-        if (hasNavigated) {
-            Log.d(TAG, "⏭️ Already navigated, skipping")
-            return
+        // ✅ THREAD-SAFE: Synchronized block prevents double navigation
+        synchronized(this) {
+            if (hasNavigated) {
+                Log.d(TAG, "⏭️ Already navigated, skipping")
+                return
+            }
+            hasNavigated = true
         }
 
-        hasNavigated = true
         Log.d(TAG, "💾 Saving permissions and navigating...")
 
         val profileDataStore = ProfileDataStore(this)
@@ -331,7 +373,7 @@ class SplashActivity : ComponentActivity() {
             profileDataStore.setPermissionsGranted()
             Log.d(TAG, "💾 Permissions state saved")
 
-            // Navigate immediately on main thread
+            // Navigate on main thread
             Handler(Looper.getMainLooper()).post {
                 navigateToMain()
             }
@@ -339,9 +381,7 @@ class SplashActivity : ComponentActivity() {
     }
 
     private fun navigateToMain() {
-        Log.d(TAG, "🎯 Attempting to navigate to MainActivity...")
-
-        // Don't check hasNavigated here - it's already set in savePermissionsAndNavigate
+        Log.d(TAG, "🎯 Navigating to MainActivity...")
 
         val intent = Intent(this, MainActivity::class.java)
         intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
@@ -349,7 +389,6 @@ class SplashActivity : ComponentActivity() {
         finish()
         overridePendingTransition(0, 0)
     }
-
 
     // ========================================
     // UI COMPOSABLE
@@ -390,7 +429,12 @@ class SplashActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "SPLASH"
+
+        // ✅ ALL request codes defined
         private const val REQUEST_NOTIFICATION = 100
         private const val REQUEST_CONTACTS = 101
+        private const val REQUEST_ALARM = 102
+        private const val REQUEST_USAGE_STATS = 103
+        private const val REQUEST_OVERLAY = 104
     }
 }

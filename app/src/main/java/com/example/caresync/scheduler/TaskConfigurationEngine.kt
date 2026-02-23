@@ -97,7 +97,7 @@ class TaskConfigurationEngine(private val context: Context) {
     }
 
     /**
-     * Validate task settings before saving
+     * ✅ FIXED: Validate task settings before saving
      */
     private fun validateSettings(reminder: ReminderSettings): ValidationResult {
         // Check title
@@ -112,23 +112,27 @@ class TaskConfigurationEngine(private val context: Context) {
             }
         }
 
-        // Check min occurrence for Model mode
+        // ✅ FIX #1: Allow minOccurrence = 0 for pure ML mode
+        // Only validate if minOccurrence is not provided (null)
         if (reminder.triggerMode == com.example.caresync.domain.TriggerMode.MODEL_ASSISTED) {
-            if (reminder.repeatInterval == null || reminder.repeatInterval <= 0) {
-                return ValidationResult(false, "Please set minimum occurrences for Model mode")
+            if (reminder.repeatInterval == null) {
+                // ✅ CHANGED: Default to 0 (pure ML mode) instead of error
+                Log.d("CONFIG_ENGINE", "⚠️ minOccurrence not set, defaulting to 0 (pure ML mode)")
             }
+            // ✅ REMOVED: The validation that rejected minOccurrence <= 0
+            // Now allows: 0 (pure ML), 1, 2, 3... (with guarantees)
         }
 
         return ValidationResult(true)
     }
 
     /**
-     * Cleanup event logs older than 100 days
+     * ✅ FIXED: Cleanup comment - was 45 days, said 100 days
      */
     private suspend fun cleanupOldEvents() {
         try {
-            val fortyFiveDaysAgo = System.currentTimeMillis() - 100 * 24 * 60 * 60 * 1000L
-            val deletedCount = eventDao.deleteOldEvents(fortyFiveDaysAgo)
+            val oneHundredDaysAgo = System.currentTimeMillis() - (100 * 24 * 60 * 60 * 1000L)
+            val deletedCount = eventDao.deleteOldEvents(oneHundredDaysAgo)
             Log.d("CLEANUP", "Deleted $deletedCount old event logs (>100 days)")
         } catch (e: Exception) {
             Log.e("CLEANUP", "Cleanup failed", e)

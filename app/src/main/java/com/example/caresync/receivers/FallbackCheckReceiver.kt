@@ -38,6 +38,9 @@ class FallbackCheckReceiver : BroadcastReceiver() {
 
         Log.d(TAG, "⏰ Fallback alarm triggered for task $reminderId")
 
+        // ✅ ADD THIS
+        val pendingResult = goAsync()
+
         // Start FallbackCheckWorker
         val workRequest = OneTimeWorkRequestBuilder<FallbackCheckWorker>()
             .setInputData(
@@ -56,6 +59,9 @@ class FallbackCheckReceiver : BroadcastReceiver() {
         if (slotDuration > 0) {
             scheduleNextFallbackAlarm(context, reminderId, slotEnd, slotDuration)
         }
+
+        // ✅ ADD THIS
+        pendingResult.finish()
     }
 
     /**

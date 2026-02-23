@@ -14,6 +14,7 @@ class BoostModeScheduler {
     companion object {
         private const val TAG = "BOOST_SCHEDULER"
         private const val BOOST_REQUEST_CODE_OFFSET = 50000
+        private const val BOOST_END_REQUEST_CODE_OFFSET = 100000
 
         /**
          * Start Boost Mode - ADDS extra notifications on top of existing schedule
@@ -29,6 +30,12 @@ class BoostModeScheduler {
             Log.d(TAG, "   Frequency: $frequencyPerHour per hour")
             Log.d(TAG, "   ✅ Normal reminders CONTINUE running (boost is additional)")
 
+            // ✅ FIX #2: Validate frequency before scheduling
+            if (frequencyPerHour <= 0) {
+                Log.e(TAG, "❌ Invalid frequency: $frequencyPerHour (must be > 0)")
+                return
+            }
+
             val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
 
             // ✅ Check permission for exact alarms (Android 12+)
@@ -39,13 +46,21 @@ class BoostModeScheduler {
                 }
             }
 
+            // ✅ FIX #2: Calculate expected alarm count and cap at 100
+            val expectedAlarmCount = durationHours * frequencyPerHour
+            if (expectedAlarmCount > 100) {
+                Log.w(TAG, "⚠️ Too many boost alarms: $expectedAlarmCount (capping at 100)")
+            }
+            val maxAlarms = minOf(expectedAlarmCount, 100)
+
             val intervalMillis = (60 * 60 * 1000L) / frequencyPerHour
             val endTime = System.currentTimeMillis() + (durationHours * 60 * 60 * 1000L)
 
             var nextAlarmTime = System.currentTimeMillis() + intervalMillis
             var alarmCount = 0
 
-            while (nextAlarmTime <= endTime && alarmCount < 1000) {
+            // ✅ FIX #2: Use calculated maxAlarms instead of hard-coded 1000
+            while (nextAlarmTime <= endTime && alarmCount < maxAlarms) {
                 val intent = Intent(context, FallbackCheckReceiver::class.java).apply {
                     putExtra("reminderId", reminder.id)
                     putExtra("slotStart", nextAlarmTime - 10000L)
@@ -54,7 +69,8 @@ class BoostModeScheduler {
                     putExtra("boostAlarmId", alarmCount)
                 }
 
-                val requestCode = BOOST_REQUEST_CODE_OFFSET + (reminder.id * 1000).toInt() + alarmCount
+                // ✅ FIX #1: Fixed requestCode collision - spread reminder.id ranges
+                val requestCode = BOOST_REQUEST_CODE_OFFSET + (reminder.id * 10000).toInt() + alarmCount
 
                 val pendingIntent = PendingIntent.getBroadcast(
                     context,
@@ -88,6 +104,9 @@ class BoostModeScheduler {
                 nextAlarmTime += intervalMillis
             }
 
+            // ✅ Store scheduled count for later cleanup
+            saveScheduledBoostCount(context, reminder.id, alarmCount)
+
             scheduleBoostModeEnd(context, reminder.id, endTime, alarmManager)
 
             Log.d(TAG, "✅ Scheduled $alarmCount ADDITIONAL boost notifications")
@@ -103,9 +122,14 @@ class BoostModeScheduler {
 
             val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
 
-            for (i in 0..1000) {
+            // ✅ FIX #3: Only loop through scheduled alarms, not all 1001
+            val scheduledCount = getScheduledBoostCount(context, reminderId)
+            Log.d(TAG, "Cleaning up $scheduledCount boost alarms...")
+
+            for (i in 0 until scheduledCount) {
                 val intent = Intent(context, FallbackCheckReceiver::class.java)
-                val requestCode = BOOST_REQUEST_CODE_OFFSET + (reminderId * 1000).toInt() + i
+                // ✅ Use same calculation as startBoostMode
+                val requestCode = BOOST_REQUEST_CODE_OFFSET + (reminderId * 10000).toInt() + i
 
                 val pendingIntent = PendingIntent.getBroadcast(
                     context,
@@ -117,12 +141,14 @@ class BoostModeScheduler {
                 pendingIntent?.let {
                     alarmManager.cancel(it)
                     it.cancel()
+                    Log.d(TAG, "   Cancelled alarm $i")
                 }
             }
 
             // Cancel auto-disable alarm
             val endIntent = Intent(context, com.example.caresync.receivers.BoostModeEndReceiver::class.java)
-            val endRequestCode = BOOST_REQUEST_CODE_OFFSET + reminderId.toInt()
+            // ✅ FIX #1: Use separate offset for end receiver
+            val endRequestCode = BOOST_END_REQUEST_CODE_OFFSET + reminderId.toInt()
             val endPendingIntent = PendingIntent.getBroadcast(
                 context,
                 endRequestCode,
@@ -133,7 +159,11 @@ class BoostModeScheduler {
             endPendingIntent?.let {
                 alarmManager.cancel(it)
                 it.cancel()
+                Log.d(TAG, "   Cancelled auto-disable alarm")
             }
+
+            // Clean up stored count
+            deleteScheduledBoostCount(context, reminderId)
 
             Log.d(TAG, "✅ Boost Mode stopped (normal reminders unaffected)")
         }
@@ -151,7 +181,8 @@ class BoostModeScheduler {
                 putExtra("reminderId", reminderId)
             }
 
-            val requestCode = BOOST_REQUEST_CODE_OFFSET + reminderId.toInt()
+            // ✅ FIX #1: Use separate offset for end receiver to avoid collision
+            val requestCode = BOOST_END_REQUEST_CODE_OFFSET + reminderId.toInt()
 
             val pendingIntent = PendingIntent.getBroadcast(
                 context,
@@ -182,6 +213,30 @@ class BoostModeScheduler {
             } catch (e: SecurityException) {
                 Log.e(TAG, "❌ Failed to schedule auto-disable", e)
             }
+        }
+
+        /**
+         * ✅ FIX #3: Store scheduled boost count in SharedPreferences
+         */
+        private fun saveScheduledBoostCount(context: Context, reminderId: Long, count: Int) {
+            val prefs = context.getSharedPreferences("boost_mode", Context.MODE_PRIVATE)
+            prefs.edit().putInt("boost_count_$reminderId", count).apply()
+        }
+
+        /**
+         * ✅ FIX #3: Retrieve scheduled boost count
+         */
+        private fun getScheduledBoostCount(context: Context, reminderId: Long): Int {
+            val prefs = context.getSharedPreferences("boost_mode", Context.MODE_PRIVATE)
+            return prefs.getInt("boost_count_$reminderId", 0)
+        }
+
+        /**
+         * ✅ FIX #3: Clean up stored count
+         */
+        private fun deleteScheduledBoostCount(context: Context, reminderId: Long) {
+            val prefs = context.getSharedPreferences("boost_mode", Context.MODE_PRIVATE)
+            prefs.edit().remove("boost_count_$reminderId").apply()
         }
     }
 }

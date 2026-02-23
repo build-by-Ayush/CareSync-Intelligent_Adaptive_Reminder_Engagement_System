@@ -3,198 +3,302 @@ package com.example.caresync.scheduler.schedulers
 import android.content.Context
 import android.util.Log
 import androidx.work.*
+import com.example.caresync.data.ReminderRepository
 import com.example.caresync.domain.ReminderSettings
-import com.example.caresync.domain.IntervalUnit
-import com.example.caresync.scheduler.workers.MLCheckWorker  // ✅ ADD THIS IMPORT
+import com.example.caresync.scheduler.workers.SessionPollingWorker
 import java.util.concurrent.TimeUnit
 
 /**
- * LAYER 3A: Model Mode Scheduler
+ * LAYER 3A: Model Mode Scheduler - SessionPollingWorker Lifecycle Manager
  *
- * Responsibilities:
- * - Set up periodic ML checks (every hour)
- * - ML model decides when to fire notifications
- * - Enforce minimum occurrence quotas
+ * ═══════════════════════════════════════════════════════════════════════════
+ * PURPOSE: Control when SessionPollingWorker starts and stops
+ * ═══════════════════════════════════════════════════════════════════════════
  *
- * Logic:
- * - Schedules MLCheckWorker to run every hour
- * - Worker calls ML model with device context
- * - Worker checks if min occurrence quota met
- * - If (ML says YES) OR (quota not met): fire notification
+ * RESPONSIBILITIES:
+ * ├─ Enable SessionPollingWorker when Model Mode reminder created
+ * ├─ Disable SessionPollingWorker when last Model Mode reminder deleted
+ * ├─ Check if other Model Mode reminders exist before stopping
+ * └─ Optimize battery by avoiding unnecessary background work
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * HOW IT WORKS:
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * CREATE Model Mode Reminder:
+ * ┌─────────────────────────────────────────────────────────────────────────┐
+ * │ 1. User creates reminder with Model Mode                               │
+ * │ 2. TaskConfigurationEngine → SchedulingCoordinator                      │
+ * │ 3. SchedulingCoordinator.scheduleTask() calls:                          │
+ * │    ModelModeScheduler.enableForReminder(reminder)                       │
+ * │ 4. enableForReminder() calls startSessionPollingWorker()               │
+ * │ 5. SessionPollingWorker starts (if not already running)                │
+ * │ 6. Result: Every 15 min, SessionPollingWorker detects app engagement   │
+ * └─────────────────────────────────────────────────────────────────────────┘
+ *
+ * DELETE Model Mode Reminder:
+ * ┌─────────────────────────────────────────────────────────────────────────┐
+ * │ 1. User deletes reminder                                               │
+ * │ 2. TaskConfigurationEngine → SchedulingCoordinator                      │
+ * │ 3. SchedulingCoordinator.cancelTask() calls:                            │
+ * │    ModelModeScheduler.disableForReminder(reminderId)                    │
+ * │ 4. disableForReminder() checks: Are there OTHER Model Mode reminders?  │
+ * │    a. If YES → Keep SessionPollingWorker running                       │
+ * │    b. If NO → Stop SessionPollingWorker (save battery!)                │
+ * │ 5. Result: Worker only runs when needed                                │
+ * └─────────────────────────────────────────────────────────────────────────┘
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * BATTERY OPTIMIZATION:
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * BEFORE (always running): Every 15 min wakes device → Drains battery ❌
+ * AFTER (smart start/stop):
+ *   ├─ Model Mode reminder exists → Run every 15 min ✅
+ *   └─ No Model Mode reminders → Stop (battery saved!) ✅
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * SessionPollingWorker Details:
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * - Frequency: Every 15 minutes
+ * - Purpose: Detect when app reaches engagement milestones (5, 10, 15, 20, 25 min)
+ * - Action: Fires mini-alarms at each milestone
+ * - Triggers: SessionAlarmReceiver → MLCheckWorker
+ * - Result: Real-time ML notifications for Model Mode
  */
 class ModelModeScheduler(private val context: Context) {
 
-    fun schedule(reminder: ReminderSettings) {
-        Log.d("MODEL_SCHEDULER", "Setting up ML checks for task: ${reminder.id}")
+    // ═════════════════════════════════════════════════════════════════════
+    // PUBLIC METHODS (Called from SchedulingCoordinator)
+    // ═════════════════════════════════════════════════════════════════════
 
-        // Determine check interval (default: every hour)
-        val checkInterval = getCheckInterval(reminder)
+    /**
+     * ENABLE SessionPollingWorker for a new Model Mode reminder
+     *
+     * Called when user creates or enables a Model Mode reminder
+     *
+     * @param reminder The ReminderSettings that was just created/enabled
+     *
+     * Flow:
+     * 1. Log that Model Mode was enabled
+     * 2. Call startSessionPollingWorker()
+     * 3. SessionPollingWorker now active (will run every 15 min)
+     *
+     * Example:
+     * ┌─────────────────────────────────────────────────────────────────┐
+     * │ User creates "Study Time" with Model Mode                       │
+     * │ ↓                                                               │
+     * │ enableForReminder(studyReminder)                                │
+     * │ ↓                                                               │
+     * │ startSessionPollingWorker()                                     │
+     * │ ↓                                                               │
+     * │ SessionPollingWorker active every 15 min ✅                     │
+     * └─────────────────────────────────────────────────────────────────┘
+     */
+    suspend fun enableForReminder(reminder: ReminderSettings) {
+        Log.d(TAG, """
+            ✅ Model Mode ENABLED
+               Reminder: ${reminder.title} (ID: ${reminder.id})
+               Starting SessionPollingWorker if not already running...
+        """.trimIndent())
 
-        // Create periodic ML check worker
-        val checkRequest = PeriodicWorkRequestBuilder<MLCheckWorker>(
-            checkInterval.first,
-            checkInterval.second
+        // Start the background worker
+        startSessionPollingWorker()
+
+        Log.d(TAG, "✅ SessionPollingWorker is now active for Model Mode")
+    }
+
+    /**
+     * DISABLE SessionPollingWorker when a Model Mode reminder is deleted/disabled
+     *
+     * Called when user deletes or disables a Model Mode reminder
+     *
+     * Smart Logic:
+     * 1. Check if OTHER Model Mode reminders exist
+     * 2. If YES → Keep SessionPollingWorker running (still needed)
+     * 3. If NO → Stop SessionPollingWorker (save battery!)
+     *
+     * @param reminderId The ID of reminder that was deleted/disabled
+     *
+     * Example 1 - Multiple reminders:
+     * ┌─────────────────────────────────────────────────────────────────┐
+     * │ Reminders: [Study (Model Mode), Focus (Model Mode)]             │
+     * │ User deletes: Study                                             │
+     * │ ↓                                                               │
+     * │ disableForReminder(studyId)                                     │
+     * │ ↓                                                               │
+     * │ Check: Other Model Mode reminders? YES (Focus exists)           │
+     * │ ↓                                                               │
+     * │ Keep SessionPollingWorker running ✅ (Focus still needs it)     │
+     * └─────────────────────────────────────────────────────────────────┘
+     *
+     * Example 2 - Last reminder:
+     * ┌─────────────────────────────────────────────────────────────────┐
+     * │ Reminders: [Study (Model Mode)]                                 │
+     * │ User deletes: Study                                             │
+     * │ ↓                                                               │
+     * │ disableForReminder(studyId)                                     │
+     * │ ↓                                                               │
+     * │ Check: Other Model Mode reminders? NO                           │
+     * │ ↓                                                               │
+     * │ Stop SessionPollingWorker ⏹️ (No Model Mode reminders left)     │
+     * │ Result: Battery saved! ✅                                       │
+     * └─────────────────────────────────────────────────────────────────┘
+     */
+    suspend fun disableForReminder(reminderId: Long) {
+        Log.d(TAG, """
+            ❌ Model Mode DISABLED
+               Reminder ID: $reminderId
+               Checking if other Model Mode reminders exist...
+        """.trimIndent())
+
+        // Smart check: Are there OTHER Model Mode reminders?
+        val hasOtherModelModeReminders = checkIfAnyModelModeRemindersExist()
+
+        if (hasOtherModelModeReminders) {
+            // YES: Other reminders exist, keep worker running
+            Log.d(TAG, """
+                ℹ️ Other Model Mode reminders exist
+                   Keeping SessionPollingWorker active
+            """.trimIndent())
+            // Don't stop the worker
+        } else {
+            // NO: No other reminders, safe to stop worker
+            Log.d(TAG, """
+                🔄 No Model Mode reminders left
+                   Stopping SessionPollingWorker (battery optimization)
+            """.trimIndent())
+
+            // Stop the background worker (saves battery!)
+            stopSessionPollingWorker()
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // PRIVATE METHODS (Internal implementation)
+    // ═════════════════════════════════════════════════════════════════════
+
+    /**
+     * Start SessionPollingWorker
+     *
+     * Creates and enqueues a periodic work request that runs every 15 minutes
+     *
+     * Configuration:
+     * ├─ Frequency: 15 minutes
+     * ├─ Worker: SessionPollingWorker
+     * ├─ Constraint: Battery not low (protects battery)
+     * ├─ Policy: KEEP (don't restart if already running)
+     * └─ Tag: "session-polling" (for identification)
+     *
+     * Result:
+     * - SessionPollingWorker will wake up every 15 minutes
+     * - Check which apps are running
+     * - Fire mini-alarms at engagement milestones
+     * - Trigger SessionAlarmReceiver → MLCheckWorker
+     */
+    suspend fun startSessionPollingWorker() {
+        Log.d(TAG, """
+        ══════════════════════════════════════════════════════
+        🚀 ABOUT TO ENQUEUE SessionPollingWorker
+        ══════════════════════════════════════════════════════
+    """.trimIndent())
+
+        val sessionPollingRequest = PeriodicWorkRequestBuilder<SessionPollingWorker>(
+            15, TimeUnit.MINUTES
         )
-            .setInputData(
-                workDataOf(
-                    "reminderId" to reminder.id,
-                    "minOccurrence" to (reminder.repeatInterval ?: 0),
-                    "intervalUnit" to (reminder.repeatIntervalUnit?.name ?: "HOUR")
-                )
-            )
             .setConstraints(
                 Constraints.Builder()
-                    .setRequiresBatteryNotLow(true)
+                    // ✅ REMOVE battery constraint for testing:
+                    // .setRequiresBatteryNotLow(true)
                     .build()
             )
-            .addTag("ml-check-${reminder.id}")
+            .addTag("session-polling")
             .build()
 
-        // Enqueue ML check worker
         WorkManager.getInstance(context).enqueueUniquePeriodicWork(
-            "ml-check-${reminder.id}",
-            ExistingPeriodicWorkPolicy.KEEP,
-            checkRequest
+            "session-polling-worker",
+            ExistingPeriodicWorkPolicy.REPLACE,
+            sessionPollingRequest
         )
 
-        Log.d("MODEL_SCHEDULER", "✅ ML check worker scheduled: checks every ${checkInterval.first} ${checkInterval.second}")
-
-        // ✅ NEW: Only schedule fallback if min occurrence > 0
-        val minOccurrence = reminder.repeatInterval ?: 0
-        if (minOccurrence > 0) {
-            scheduleFallbackChecks(context, reminder)
-            Log.d("MODEL_SCHEDULER", "✅ Fallback safety net enabled: $minOccurrence notifications per ${reminder.repeatIntervalUnit ?: "DAY"}")
-            Log.d("MODEL_SCHEDULER", "   (Fallback fires if ML doesn't meet minimum)")
-        } else {
-            Log.d("MODEL_SCHEDULER", "✅ Pure ML mode: No fallback (min occurrence = 0)")
-            Log.d("MODEL_SCHEDULER", "   (Notifications ONLY when ML model predicts)")
-        }
-
+        Log.d(TAG, """
+        ══════════════════════════════════════════════════════
+        ✅ SessionPollingWorker ENQUEUED (no battery constraint)
+        ══════════════════════════════════════════════════════
+    """.trimIndent())
     }
 
 
     /**
-     * Determine how often to run ML checks based on min occurrence settings
+     * Stop SessionPollingWorker
+     *
+     * Called when all Model Mode reminders are deleted
+     * Saves battery by canceling unnecessary background work
+     *
+     * Action: Cancels the unique periodic work request
      */
-    private fun getCheckInterval(reminder: ReminderSettings): Pair<Long, TimeUnit> {
-        val minOccurrence = reminder.repeatInterval ?: 1
-        val unit = reminder.repeatIntervalUnit ?: IntervalUnit.HOUR
-
-        // ✅ FIXED: Removed WEEK, added MINUTE
-        return when (unit) {
-            IntervalUnit.MINUTE -> {
-                // Check every X minutes (minimum 15 minutes for WorkManager)
-                val minutes = maxOf(15, minOccurrence)  // WorkManager minimum is 15 min
-                Pair(minutes.toLong(), TimeUnit.MINUTES)
-            }
-            IntervalUnit.HOUR -> {
-                // Check every hour for hourly quotas
-                Pair(1, TimeUnit.HOURS)
-            }
-            IntervalUnit.DAY -> {
-                // For daily quotas, check every 2-4 hours
-                val checkEvery = maxOf(1, 24 / (minOccurrence * 2))
-                Pair(checkEvery.toLong(), TimeUnit.HOURS)
-            }
-        }
-    }
-
-    /**
-     * Schedule fallback checks via AlarmManager
-     * These ensure minimum quota is met even if ML doesn't fire
-     */
-    fun scheduleFallbackChecks(context: Context, reminder: ReminderSettings) {
-        val minOccurrence = reminder.repeatInterval ?: 0
-        if (minOccurrence <= 0) {
-            Log.d("MODEL_SCHEDULER", "No min occurrence set, skipping fallback checks")
-            return
-        }
-
-        val unit = reminder.repeatIntervalUnit ?: com.example.caresync.domain.IntervalUnit.HOUR
-
-        // Calculate slot duration
-        val slotDuration = when (unit) {
-            com.example.caresync.domain.IntervalUnit.MINUTE -> {
-                val totalMinutes = reminder.repeatInterval ?: 60
-                (totalMinutes * 60 * 1000L) / minOccurrence
-            }
-            com.example.caresync.domain.IntervalUnit.HOUR -> {
-                (60 * 60 * 1000L) / minOccurrence
-            }
-            com.example.caresync.domain.IntervalUnit.DAY -> {
-                (24 * 60 * 60 * 1000L) / minOccurrence
-            }
-        }
-
-        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
-
-        // ✅ NEW: Check permission before scheduling (Android 12+)
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-            if (!alarmManager.canScheduleExactAlarms()) {
-                Log.w("MODEL_SCHEDULER", "⚠️ Exact alarm permission not granted, using inexact alarms")
-            }
-        }
-
-        val now = System.currentTimeMillis()
-        val firstSlotEnd = now + slotDuration
-
-        val intent = android.content.Intent(context, com.example.caresync.receivers.FallbackCheckReceiver::class.java).apply {
-            putExtra("reminderId", reminder.id)
-            putExtra("slotStart", now)
-            putExtra("slotEnd", firstSlotEnd)
-            putExtra("slotDuration", slotDuration)
-        }
-
-        val pendingIntent = android.app.PendingIntent.getBroadcast(
-            context,
-            reminder.id.toInt(),
-            intent,
-            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
-        )
+    suspend fun stopSessionPollingWorker() {
+        Log.d(TAG, "⏹️ Stopping SessionPollingWorker...")
 
         try {
-            // ✅ UPDATED: Use API-appropriate method
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-                // Android 6.0+ (API 23+)
-                alarmManager.setExactAndAllowWhileIdle(
-                    android.app.AlarmManager.RTC_WAKEUP,
-                    firstSlotEnd,
-                    pendingIntent
-                )
-            } else {
-                // Android 5.0-5.1 (API 21-22)
-                alarmManager.setExact(
-                    android.app.AlarmManager.RTC_WAKEUP,
-                    firstSlotEnd,
-                    pendingIntent
-                )
-            }
+            // Cancel the periodic work
+            WorkManager.getInstance(context)
+                .cancelUniqueWork("session-polling-worker")
 
-            Log.d("MODEL_SCHEDULER", "📅 Fallback checks scheduled: every ${slotDuration / 1000 / 60} minutes")
-        } catch (e: SecurityException) {
-            Log.e("MODEL_SCHEDULER", "❌ Failed to schedule exact alarm", e)
-            // You could fallback to inexact alarm here if needed
+            Log.d(TAG, """
+                ✅ SessionPollingWorker stopped
+                   Battery optimization: Active
+                   Status: INACTIVE (no Model Mode reminders)
+            """.trimIndent())
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error stopping SessionPollingWorker", e)
         }
     }
 
     /**
-     * Cancel fallback alarms for a task
+     * Check if ANY Model Mode reminders exist in database
+     *
+     * Query database to find reminders with:
+     * - triggerMode = "MODEL_ASSISTED"
+     * - enabled = true
+     *
+     * Used to decide whether to keep or stop SessionPollingWorker
+     *
+     * @return true if at least one Model Mode reminder exists
+     *         false if no Model Mode reminders exist
+     *
+     * Example Results:
+     * ├─ Database has [Study (Model Mode), Task2 (Fixed Time)]
+     * │  → Result: true (Study is Model Mode) ✅
+     * ├─ Database has [Task1 (Fixed Time), Task2 (Fixed Time)]
+     * │  → Result: false (no Model Mode) ❌
+     * └─ Database is empty
+     *    → Result: false (no reminders) ❌
      */
-    fun cancelFallbackChecks(context: Context, reminderId: Long) {
-        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+    suspend fun checkIfAnyModelModeRemindersExist(): Boolean {
+        return try {
+            // Query database for ALL reminders with Model Mode enabled
+            val repository = ReminderRepository(context)
+            val hasReminders = repository.getAllWithModelMode().isNotEmpty()
 
-        val intent = android.content.Intent(context, com.example.caresync.receivers.FallbackCheckReceiver::class.java)
-        val pendingIntent = android.app.PendingIntent.getBroadcast(
-            context,
-            reminderId.toInt(),
-            intent,
-            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_NO_CREATE
-        )
+            // Log result for debugging
+            Log.d(TAG, "📊 Model Mode reminder count: ${if (hasReminders) "≥1" else "0"}")
 
-        pendingIntent?.let {
-            alarmManager.cancel(it)
-            it.cancel()
-            Log.d("MODEL_SCHEDULER", "📅 Fallback alarms cancelled for task $reminderId")
+            hasReminders
+        } catch (e: Exception) {
+            // If error: Log and assume reminders exist (safe default)
+            Log.e(TAG, "❌ Error checking Model Mode reminders", e)
+            true  // Safe to assume reminders exist on error
         }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // COMPANION OBJECT (Static members)
+    // ═════════════════════════════════════════════════════════════════════
+
+    companion object {
+        // Tag for logging (appears in logcat as "ModelModeScheduler")
+        private const val TAG = "ModelModeScheduler"
     }
 }

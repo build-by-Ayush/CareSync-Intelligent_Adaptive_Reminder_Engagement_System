@@ -16,18 +16,26 @@ class BoostModeEndReceiver : BroadcastReceiver() {
 
         Log.d("BOOST_MODE", "⏱️ Boost Mode ended for task $reminderId")
 
+        // ✅ CRITICAL FIX: Use goAsync() to extend receiver lifetime
+        val pendingResult = goAsync()
+
         CoroutineScope(Dispatchers.IO).launch {
-            val repo = ReminderRepository(context)
-            val reminder = repo.get(reminderId)
+            try {
+                val repo = ReminderRepository(context)
+                val reminder = repo.get(reminderId)
 
-            if (reminder != null) {
-                val updated = reminder.copy(
-                    boostModeActive = false,
-                    boostModeEndTime = null
-                )
-                repo.upsert(updated)
+                if (reminder != null) {
+                    val updated = reminder.copy(
+                        boostModeActive = false,
+                        boostModeEndTime = null
+                    )
+                    repo.upsert(updated)
 
-                Log.d("BOOST_MODE", "✅ Boost Mode disabled")
+                    Log.d("BOOST_MODE", "✅ Boost Mode disabled")
+                }
+            } finally {
+                // ✅ CRITICAL: Signal completion to system
+                pendingResult.finish()
             }
         }
     }

@@ -14,6 +14,7 @@ import com.example.caresync.intelligence.OptimalTimeLearner
  * - Runs every Sunday at 3 AM
  * - Tests stale blacklists (>30 days old)
  * - Removes blacklists if user habits improved
+ * - Uses consistent threshold (5+ dismissals) from RandomTimeScheduler
  *
  * Why Weekly:
  * - Not time-sensitive (doesn't need daily)
@@ -27,6 +28,7 @@ class BlacklistDecayWorker(
 
     companion object {
         private const val TAG = "BlacklistDecayWorker"
+        private const val BLACKLIST_THRESHOLD = 5  // ✅ CONSISTENT: Same as RandomTimeScheduler
     }
 
     override suspend fun doWork(): Result {
@@ -39,11 +41,11 @@ class BlacklistDecayWorker(
 
             // Get all enabled tasks
             val allTasks = reminderDao.getAllReminders()
-            // Blacklist decay runs for ALL enabled tasks (smart time always on)
+            // ✅ CONSISTENT: Check all enabled tasks
             val enabledTasks = allTasks.filter { it.enabled }
 
             if (enabledTasks.isEmpty()) {
-                Log.d(TAG, "⏭️ No tasks with adaptive layer enabled, skipping")
+                Log.d(TAG, "⏭️ No enabled tasks found, skipping")
                 return Result.success()
             }
 
@@ -55,20 +57,24 @@ class BlacklistDecayWorker(
             // Check each task
             enabledTasks.forEach { task ->
                 try {
+                    // ✅ CONSISTENT: Use same threshold as RandomTimeScheduler
                     val blacklistsBefore = database.blacklistHourDao()
-                        .getBlacklistedHours(task.id, threshold = 5).size
+                        .getBlacklistedHours(task.id, threshold = BLACKLIST_THRESHOLD)
+                        .size
 
                     // Test and decay stale blacklists
                     learner.testAndDecayBlacklists(task.id)
 
+                    // ✅ CONSISTENT: Check again with same threshold
                     val blacklistsAfter = database.blacklistHourDao()
-                        .getBlacklistedHours(task.id, threshold = 5).size
+                        .getBlacklistedHours(task.id, threshold = BLACKLIST_THRESHOLD)
+                        .size
 
                     val removed = blacklistsBefore - blacklistsAfter
                     totalRemoved += removed
 
                     if (removed > 0) {
-                        Log.d(TAG, "✅ Task ${task.id} (${task.title}): Removed $removed stale blacklists")
+                        Log.d(TAG, "✅ Task ${task.id} (${task.title}): Removed $removed stale blacklists (threshold=$BLACKLIST_THRESHOLD)")
                     }
 
                     totalChecked++
@@ -77,7 +83,7 @@ class BlacklistDecayWorker(
                 }
             }
 
-            Log.d(TAG, "✅ Decay check complete: $totalChecked tasks checked, $totalRemoved blacklists removed")
+            Log.d(TAG, "✅ Decay check complete: $totalChecked tasks checked, $totalRemoved blacklists removed (threshold=$BLACKLIST_THRESHOLD)")
 
             Result.success()
 

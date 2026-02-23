@@ -18,13 +18,21 @@ class NotificationDeletedReceiver : BroadcastReceiver() {
 
         Log.d("REMINDER_EVENT", "👋 IGNORED: Task $reminderId (swiped away)")
 
+        // ✅ ADD THIS
+        val pendingResult = goAsync()
+
         CoroutineScope(Dispatchers.IO).launch {
-            // ✅ SAFE LOGGING
-            SafeEventLogger.logEvent(
-                context = context,
-                reminderId = reminderId,
-                eventType = EventTypes.IGNORED
-            )
+            try {
+                // ✅ SAFE LOGGING
+                SafeEventLogger.logEvent(
+                    context = context,
+                    reminderId = reminderId,
+                    eventType = EventTypes.IGNORED
+                )
+            } finally {
+                // ✅ ADD THIS
+                pendingResult.finish()
+            }
         }
     }
 

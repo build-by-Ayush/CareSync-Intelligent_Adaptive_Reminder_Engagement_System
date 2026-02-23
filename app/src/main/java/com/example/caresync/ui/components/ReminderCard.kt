@@ -15,14 +15,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import com.example.caresync.domain.NotifyMethod
 import com.example.caresync.domain.Priority
 import com.example.caresync.domain.ReminderSettings
 import com.example.caresync.domain.TriggerMode
+import com.example.caresync.utils.getDeviceType
+import com.example.caresync.utils.DeviceType
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
@@ -39,13 +44,76 @@ private val TOGGLE_VERTICAL_OFFSET = 6.dp       // Positive = move down, Negativ
 private val DELETE_HORIZONTAL_OFFSET = (-6).dp  // Negative = move left, Positive = move right
 private val DELETE_VERTICAL_OFFSET = 0.dp       // Positive = move down, Negative = move up
 
+// ✅ NEW: Helper to get responsive card values
+@Composable
+fun getCardResponsiveValues(): CardResponsiveValues {
+    val deviceType = getDeviceType()
+
+    return CardResponsiveValues(
+        cardHeight = when (deviceType) {
+            DeviceType.PHONE -> 120.dp
+            DeviceType.TABLET -> 160.dp
+        },
+        titleFontSize = when (deviceType) {
+            DeviceType.PHONE -> 24.sp
+            DeviceType.TABLET -> 32.sp
+        },
+        tagFontSize = when (deviceType) {
+            DeviceType.PHONE -> 10.sp
+            DeviceType.TABLET -> 12.sp
+        },
+        dueDateFontSize = when (deviceType) {
+            DeviceType.PHONE -> 16.sp
+            DeviceType.TABLET -> 18.sp
+        },
+        dueDateSmallFontSize = when (deviceType) {
+            DeviceType.PHONE -> 14.sp
+            DeviceType.TABLET -> 16.sp
+        },
+        iconSize = when (deviceType) {
+            DeviceType.PHONE -> 18.dp
+            DeviceType.TABLET -> 24.dp
+        },
+        tagIconSize = when (deviceType) {
+            DeviceType.PHONE -> 11.dp
+            DeviceType.TABLET -> 13.dp
+        },
+        deleteIconSize = when (deviceType) {
+            DeviceType.PHONE -> 20.dp
+            DeviceType.TABLET -> 24.dp
+        },
+        deleteButtonSize = when (deviceType) {
+            DeviceType.PHONE -> 30.dp
+            DeviceType.TABLET -> 40.dp
+        },
+        scheduleIconSize = when (deviceType) {
+            DeviceType.PHONE -> 18.dp
+            DeviceType.TABLET -> 22.dp
+        }
+    )
+}
+
+// ✅ NEW: Data class for responsive values
+data class CardResponsiveValues(
+    val cardHeight: Dp,
+    val titleFontSize: TextUnit,
+    val tagFontSize: TextUnit,
+    val dueDateFontSize: TextUnit,
+    val dueDateSmallFontSize: TextUnit,
+    val iconSize: Dp,
+    val tagIconSize: Dp,
+    val deleteIconSize: Dp,
+    val deleteButtonSize: Dp,
+    val scheduleIconSize: Dp
+)
+
 /**
  * Compact reminder card with balanced layout
  *
  * Features:
  * - Solid status strip on left edge (auto-clips with rounded corners)
  * - Mode and Priority tags
- * - Title with 24sp font
+ * - Title with responsive font
  * - Custom toggle switch (adjustable position)
  * - Notification method icons
  * - Color-coded due date
@@ -61,6 +129,9 @@ fun ReminderCard(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+
+    // ✅ NEW: Get responsive values
+    val cardResponsive = getCardResponsiveValues()
 
     // Calculate status strip color
     var stripColor by remember { mutableStateOf(StatusStripCalculator.StatusBlue) }
@@ -79,7 +150,7 @@ fun ReminderCard(
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .height(120.dp)
+            .height(cardResponsive.cardHeight)  // ✅ CHANGED
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
@@ -134,12 +205,12 @@ fun ReminderCard(
                                     imageVector = getModeIcon(reminder.triggerMode),
                                     contentDescription = null,
                                     tint = Color.White,
-                                    modifier = Modifier.size(11.dp)
+                                    modifier = Modifier.size(cardResponsive.tagIconSize)  // ✅ CHANGED
                                 )
                                 Text(
                                     text = getModeName(reminder.triggerMode),
                                     color = Color.White,
-                                    fontSize = 10.sp,
+                                    fontSize = cardResponsive.tagFontSize,  // ✅ CHANGED
                                     fontWeight = FontWeight.Medium
                                 )
                             }
@@ -153,7 +224,7 @@ fun ReminderCard(
                             Text(
                                 text = getPriorityName(reminder.priority),
                                 color = Color.White,
-                                fontSize = 10.sp,
+                                fontSize = cardResponsive.tagFontSize,  // ✅ CHANGED
                                 fontWeight = FontWeight.Medium,
                                 modifier = Modifier.padding(
                                     horizontal = 7.dp,
@@ -181,7 +252,7 @@ fun ReminderCard(
                 Text(
                     text = reminder.title,
                     color = Color.White,
-                    fontSize = 24.sp,
+                    fontSize = cardResponsive.titleFontSize,  // ✅ CHANGED
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -206,7 +277,7 @@ fun ReminderCard(
                                 imageVector = getMethodIcon(method),
                                 contentDescription = method.name,
                                 tint = Color(0xFFB3B3B3),
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(cardResponsive.iconSize)  // ✅ CHANGED
                             )
                         }
                     }
@@ -223,12 +294,12 @@ fun ReminderCard(
                                 imageVector = Icons.Filled.Schedule,
                                 contentDescription = null,
                                 tint = dueDateInfo.color,
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(cardResponsive.scheduleIconSize)  // ✅ CHANGED
                             )
                             Text(
                                 text = dueDateInfo.text,
                                 color = dueDateInfo.color,
-                                fontSize = 16.sp,
+                                fontSize = cardResponsive.dueDateFontSize,  // ✅ CHANGED
                                 fontWeight = FontWeight.Bold
                             )
                         } else {
@@ -236,7 +307,7 @@ fun ReminderCard(
                             Text(
                                 text = "No due date",
                                 color = Color(0xFFA9A9A9), // Gray
-                                fontSize = 14.sp,
+                                fontSize = cardResponsive.dueDateSmallFontSize,  // ✅ CHANGED
                                 fontWeight = FontWeight.Normal
                             )
                         }
@@ -251,13 +322,13 @@ fun ReminderCard(
                     ) {
                         IconButton(
                             onClick = onDelete,
-                            modifier = Modifier.size(30.dp)
+                            modifier = Modifier.size(cardResponsive.deleteButtonSize)  // ✅ CHANGED
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.Delete,
                                 contentDescription = "Delete",
                                 tint = Color(0xFFE57373), // Light red
-                                modifier = Modifier.size(20.dp)
+                                modifier = Modifier.size(cardResponsive.deleteIconSize)  // ✅ CHANGED
                             )
                         }
                     }
@@ -274,10 +345,24 @@ private data class DueDateInfo(val text: String, val color: Color)
 private fun calculateDueDateInfo(dueDate: Long?): DueDateInfo? {
     if (dueDate == null || dueDate == 0L) return null
 
-    val now = System.currentTimeMillis()
-    val diffMillis = dueDate - now
+    // ✅ FIXED: Compare dates only (ignore time)
+    val nowCal = Calendar.getInstance().apply {
+        set(Calendar.HOUR_OF_DAY, 0)
+        set(Calendar.MINUTE, 0)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+    }
+
+    val dueCal = Calendar.getInstance().apply {
+        timeInMillis = dueDate
+        set(Calendar.HOUR_OF_DAY, 0)
+        set(Calendar.MINUTE, 0)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+    }
+
+    val diffMillis = dueCal.timeInMillis - nowCal.timeInMillis
     val diffDays = TimeUnit.MILLISECONDS.toDays(diffMillis)
-    val diffHours = TimeUnit.MILLISECONDS.toHours(diffMillis)
 
     return when {
         // ❌ RED: Overdue (past due date)
@@ -289,11 +374,11 @@ private fun calculateDueDateInfo(dueDate: Long?): DueDateInfo? {
             )
         }
 
-        // 🟡 YELLOW: Urgent (0-7 days away)
+        // 🟡 YELLOW: Urgent (0-3 days away)
         diffDays in 0..3 -> {
-            val text = when {
-                diffDays == 0L -> if (diffHours <= 1) "${diffHours}h left" else "Today"
-                diffDays == 1L -> "Tomorrow"
+            val text = when (diffDays) {
+                0L -> "Today"
+                1L -> "Tomorrow"
                 else -> "${diffDays}d left"
             }
             DueDateInfo(
@@ -302,7 +387,7 @@ private fun calculateDueDateInfo(dueDate: Long?): DueDateInfo? {
             )
         }
 
-        // 🟢 GREEN: Safe (8+ days away)
+        // 🟢 GREEN: Safe (4+ days away)
         else -> {
             val text = if (diffDays <= 30) {
                 "${diffDays}d left"

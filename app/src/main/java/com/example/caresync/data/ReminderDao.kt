@@ -25,6 +25,10 @@ interface ReminderDao {
 
     @Query("SELECT * FROM reminders WHERE id = :id")
     suspend fun getReminderById(id: Long): ReminderEntity?
+
+    // ✅ ADD THIS: Get all reminders in Model Mode (triggerMode = "MODEL_ASSISTED")
+    @Query("SELECT * FROM reminders WHERE triggerMode = 'MODEL_ASSISTED' AND enabled = 1")
+    suspend fun getAllWithModelMode(): List<ReminderEntity>
 }
 
 // ==========================================

@@ -3,9 +3,13 @@ package com.example.caresync.scheduler.schedulers
 import android.content.Context
 import android.util.Log
 import androidx.work.*
+import com.example.caresync.data.AppDatabase
 import com.example.caresync.domain.ReminderSettings
+import com.example.caresync.domain.TimePeriod
 import com.example.caresync.intelligence.OptimalTimeLearner
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
 
@@ -38,24 +42,17 @@ class RandomTimeScheduler(private val context: Context) {
     }
 
     /**
-     * ✅ UPDATED: Weighted smart selection
-     *
-     * Strategy:
-     * - ≥3 good hours → Always pick from them (enough variety)
-     * - 1-2 good hours → Pick 70% of time, explore 30%
-     * - 0 good hours → Fully random
+     * ✅ CORRECTED: Weighted smart selection with user preferences + blacklist
      */
     private fun pickSmartDayPeriodTime(reminder: ReminderSettings): Pair<Int, Int> {
-        // ✅ CHANGED: Always use smart learning for random scheduling, no toggle check
-        // Smart time learning is independent of the optimization toggle
-
+        // ✅ Get best learned hours - returns List<PreferredTime>
         val bestHours = runBlocking {
             try {
                 learner.getBestHours(
                     reminderId = reminder.id,
                     minConfidence = 0.4f,
                     minSamples = 3,
-                    limit = 5  // Get up to 5 best hours
+                    limit = 5
                 )
             } catch (e: Exception) {
                 Log.w("RANDOM_SCHEDULER", "Failed to get learned hours", e)
@@ -63,43 +60,109 @@ class RandomTimeScheduler(private val context: Context) {
             }
         }
 
-        // ✅ DECISION LOGIC (same as before)
+        // ✅ CORRECTED: Use getBlacklistedHours() which already exists
+        val blacklistedHours = runBlocking {
+            try {
+                val blacklistDao = AppDatabase.get(context).blacklistHourDao()
+                val blacklistedList = blacklistDao.getBlacklistedHours(
+                    reminderId = reminder.id,
+                    threshold = 5  // Get hours with 5+ dismissals
+                )
+
+                blacklistedList.map { it.hourOfDay }.toSet()
+            } catch (e: Exception) {
+                Log.w("RANDOM_SCHEDULER", "Failed to get blacklist", e)
+                emptySet()
+            }
+        }
+
+        // ✅ Convert PreferredTime to just hourOfDay, then filter
+        val validBestHours = bestHours
+            .map { it.hourOfDay }
+            .filter { it !in blacklistedHours }
+
+        // ✅ DECISION LOGIC
         when {
-            bestHours.size >= 3 -> {
-                val selectedHour = bestHours.random().hourOfDay
-                Log.d("RANDOM_SCHEDULER", "✨ Smart selection: hour $selectedHour from ${bestHours.size} good hours")
+            validBestHours.size >= 3 -> {
+                val selectedHour = validBestHours.random()
+                Log.d("RANDOM_SCHEDULER", "✨ Smart selection: hour $selectedHour from ${validBestHours.size} good hours")
                 return Pair(selectedHour, (0..59).random())
             }
-            bestHours.isNotEmpty() -> {
+            validBestHours.isNotEmpty() -> {
                 val useLearnedTime = (Math.random() < 0.7)
 
                 if (useLearnedTime) {
-                    val selectedHour = bestHours.random().hourOfDay
+                    val selectedHour = validBestHours.random()
                     Log.d("RANDOM_SCHEDULER", "✨ Smart selection: hour $selectedHour (70% probability)")
                     return Pair(selectedHour, (0..59).random())
                 } else {
                     Log.d("RANDOM_SCHEDULER", "🎲 Exploration mode: trying random time (30% probability)")
-                    return pickRandomDayPeriodTime()
+                    return pickRandomDayPeriodTime(reminder, blacklistedHours)
                 }
             }
             else -> {
-                Log.d("RANDOM_SCHEDULER", "No learned data yet, using random")
-                return pickRandomDayPeriodTime()
+                Log.d("RANDOM_SCHEDULER", "No learned data yet, using random within user preferences")
+                return pickRandomDayPeriodTime(reminder, blacklistedHours)
             }
         }
     }
 
-    private fun pickRandomDayPeriodTime(): Pair<Int, Int> {
-        val periods = listOf(
-            6..11,   // Morning
-            12..17,  // Afternoon
-            18..23   // Evening
+    /**
+     * ✅ Pick random time respecting user restrictions and blacklist
+     */
+    private fun pickRandomDayPeriodTime(
+        reminder: ReminderSettings,
+        blacklistedHours: Set<Int> = emptySet()
+    ): Pair<Int, Int> {
+
+        // ✅ Map TimePeriod to hour ranges
+        val timePeriodRanges = mapOf(
+            TimePeriod.MORNING to (6..11),
+            TimePeriod.AFTERNOON to (12..17),
+            TimePeriod.EVENING to (18..23)
         )
 
+        // ✅ Filter to only allowed periods
+        val allowedPeriods = reminder.allowedTimePeriods.ifEmpty {
+            listOf(TimePeriod.MORNING, TimePeriod.AFTERNOON, TimePeriod.EVENING)
+        }
+
+        val availablePeriods = allowedPeriods.mapNotNull { timePeriodRanges[it] }
+
+        if (availablePeriods.isEmpty()) {
+            Log.w("RANDOM_SCHEDULER", "No allowed periods found, using all periods")
+            val allPeriods = listOf(6..11, 12..17, 18..23)
+            return pickFromPeriods(allPeriods, blacklistedHours)
+        }
+
+        return pickFromPeriods(availablePeriods, blacklistedHours)
+    }
+
+    /**
+     * ✅ Pick hour from allowed periods, avoiding blacklisted hours
+     */
+    private fun pickFromPeriods(
+        periods: List<IntRange>,
+        blacklistedHours: Set<Int>
+    ): Pair<Int, Int> {
+
         val period = periods.random()
-        val hour = period.random()
+        var hour = period.random()
+
+        // ✅ Retry up to 10 times if hour is blacklisted
+        var attempts = 0
+        while (hour in blacklistedHours && attempts < 10) {
+            hour = period.random()
+            attempts++
+        }
+
+        if (hour in blacklistedHours) {
+            Log.w("RANDOM_SCHEDULER", "⚠️ All hours in period are blacklisted, using anyway: $hour")
+        }
+
         val minute = (0..59).random()
 
+        Log.d("RANDOM_SCHEDULER", "🎲 Random selection: hour $hour (blacklisted: ${hour in blacklistedHours})")
         return Pair(hour, minute)
     }
 

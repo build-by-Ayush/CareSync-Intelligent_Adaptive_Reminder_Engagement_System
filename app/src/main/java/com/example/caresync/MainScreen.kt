@@ -16,6 +16,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalConfiguration
 import kotlinx.coroutines.launch
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.runtime.collectAsState
@@ -25,6 +26,7 @@ import com.example.caresync.viewmodel.ReminderViewModel
 import com.example.caresync.domain.ReminderSettings
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Brush
 import androidx.navigation.NavHostController
 import com.example.caresync.ui.components.AppInfo
 import com.example.caresync.ui.components.getInstalledApps
@@ -37,6 +39,8 @@ import com.example.caresync.ui.components.TaskSettingBottomSheet
 import com.example.caresync.ui.components.ReminderCard
 import androidx.compose.ui.platform.LocalContext
 import com.example.caresync.ui.components.ProfileDrawerContent
+import com.example.caresync.utils.getDeviceType  // ✅ NEW: Import shared device detection
+import com.example.caresync.utils.DeviceType       // ✅ NEW: Import device type enum
 
 
 @Composable
@@ -90,8 +94,86 @@ fun MainScreen(
     navController: NavHostController,
     openDrawer: () -> Unit
 ) {
+    // ✅ NEW: Get device type for responsive design
+    val deviceType = getDeviceType()
+
+    // ✅ NEW: Responsive values
+    val topPadding = when (deviceType) {
+        DeviceType.PHONE -> 15.dp
+        DeviceType.TABLET -> 25.dp
+    }
+
+    val horizontalPadding = when (deviceType) {
+        DeviceType.PHONE -> 16.dp
+        DeviceType.TABLET -> 30.dp
+    }
+
+    val spacerHeight = when (deviceType) {
+        DeviceType.PHONE -> 50.dp
+        DeviceType.TABLET -> 80.dp
+    }
+
+    val iconSize = when (deviceType) {
+        DeviceType.PHONE -> 32.dp
+        DeviceType.TABLET -> 48.dp
+    }
+
+    val dashboardIconSize = when (deviceType) {
+        DeviceType.PHONE -> 38.dp
+        DeviceType.TABLET -> 56.dp
+    }
+
+    val cardPaddingHorizontal = when (deviceType) {
+        DeviceType.PHONE -> 18.dp
+        DeviceType.TABLET -> 32.dp
+    }
+
+    val cardPaddingVertical = when (deviceType) {
+        DeviceType.PHONE -> 12.dp
+        DeviceType.TABLET -> 18.dp
+    }
+
+    val bottomPadding = when (deviceType) {
+        DeviceType.PHONE -> 80.dp
+        DeviceType.TABLET -> 80.dp
+    }
+
+    val noTaskImageSize = when (deviceType) {
+        DeviceType.PHONE -> 200.dp
+        DeviceType.TABLET -> 320.dp
+    }
+
+    val noTaskFontSize = when (deviceType) {
+        DeviceType.PHONE -> 22.sp
+        DeviceType.TABLET -> 32.sp
+    }
+
+    val fabSize = when (deviceType) {
+        DeviceType.PHONE -> 56.dp
+        DeviceType.TABLET -> 72.dp
+    }
+
+    val fabFontSize = when (deviceType) {
+        DeviceType.PHONE -> 24.sp
+        DeviceType.TABLET -> 32.sp
+    }
+
+    val gradientStripHeight = when (deviceType) {
+        DeviceType.PHONE -> 0.11f
+        DeviceType.TABLET -> 0.12f  // ← Adjust this value as needed for tablets
+    }
+
     val vm: ReminderViewModel = viewModel()
-    val reminders by vm.reminders.collectAsState(initial = emptyList())
+
+    // ✅ NEW: Sort by creation date (newest first) - stable, doesn't reorder on toggle
+    val reminders by vm.reminders.collectAsState(initial = emptyList()).let { remindersFlow ->
+        remember(remindersFlow.value) {
+            derivedStateOf {
+                remindersFlow.value.sortedWith(compareBy({ !it.enabled }, { -it.createdAt }))
+            }
+        }
+    }
+
     var showCreateDialog by remember { mutableStateOf(false) }
 
     // ✅ ADD THIS LINE - Missing variable
@@ -100,23 +182,40 @@ fun MainScreen(
     val context = LocalContext.current
 
     Box(modifier = Modifier.fillMaxSize()) {
-        Image(
-            painter = painterResource(id = R.drawable.mainpage),
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
+        // ✅ SOLID DARK BACKGROUND
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xFF0F0620))
+        )
+
+        // ✅ TOP GRADIENT STRIP - 3-color gradient
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(gradientStripHeight)  // ← Uses responsive value
+                .background(
+                    brush = Brush.horizontalGradient(
+                        colors = listOf(
+                            Color(0xFF63014E),  // Left: Pink-Purple
+                            Color(0xFF560154),  // Middle: Dark Purple
+                            Color(0xFF4C0158)   // Right: Dark Purple-Blue
+                        )
+                    )
+                )
+                .align(Alignment.TopCenter)
         )
 
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(16.dp)
+                .padding(horizontalPadding)  // ✅ CHANGED: Now responsive
         ) {
             // Top bar code (your existing dashboard icon section)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 15.dp),
+                    .padding(top = topPadding),  // ✅ CHANGED: Now responsive
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -124,7 +223,7 @@ fun MainScreen(
                     Image(
                         painter = painterResource(id = R.drawable.menuicon),
                         contentDescription = "Menu",
-                        modifier = Modifier.size(32.dp)
+                        modifier = Modifier.size(iconSize)  // ✅ CHANGED: Now responsive
                     )
                 }
 
@@ -141,20 +240,20 @@ fun MainScreen(
                         Image(
                             painter = painterResource(id = R.drawable.dashboard),
                             contentDescription = "Dashboard",
-                            modifier = Modifier.size(38.dp)
+                            modifier = Modifier.size(dashboardIconSize)  // ✅ CHANGED: Now responsive
                         )
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(50.dp))
+            Spacer(modifier = Modifier.height(spacerHeight))  // ✅ CHANGED: Now responsive
 
             // ✅ CORRECTED SECTION - Fixed all errors
             if (reminders.isEmpty()) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(bottom = 80.dp),
+                        .padding(bottom = bottomPadding),  // ✅ CHANGED: Now responsive
                     contentAlignment = Alignment.Center
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -162,13 +261,13 @@ fun MainScreen(
                             painter = painterResource(id = R.drawable.notasklogo),
                             contentDescription = "No Task Logo",
                             modifier = Modifier
-                                .size(200.dp)
+                                .size(noTaskImageSize)  // ✅ CHANGED: Now responsive
                                 .padding(bottom = 16.dp)
                         )
                         Text(
                             text = "No Reminders",
                             color = Color.White,
-                            fontSize = 22.sp,
+                            fontSize = noTaskFontSize,  // ✅ CHANGED: Now responsive
                             fontWeight = FontWeight.Bold
                         )
                     }
@@ -177,7 +276,7 @@ fun MainScreen(
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(bottom = 80.dp)
+                        .padding(bottom = bottomPadding)  // ✅ CHANGED: Now responsive
                 ) {
                     itemsIndexed(
                         items = reminders,
@@ -198,7 +297,10 @@ fun MainScreen(
                                 vm.update { reminder }  // Load into edit state
                                 vm.delete(context)      // Delete from database
                             },
-                            modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp)
+                            modifier = Modifier.padding(
+                                horizontal = cardPaddingHorizontal,  // ✅ CHANGED: Now responsive
+                                vertical = cardPaddingVertical       // ✅ CHANGED: Now responsive
+                            )
                         )
 
                     }
@@ -206,7 +308,7 @@ fun MainScreen(
             }
         }
 
-        // FAB
+        // FAB - ✅ CHANGED: Now responsive
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -219,9 +321,10 @@ fun MainScreen(
                     vm.load(null)
                     showCreateDialog = true
                 },
-                containerColor = Color(0xFF750182)
+                containerColor = Color(0xFF750182),
+                modifier = Modifier.size(fabSize)  // ✅ NEW: Responsive FAB size
             ) {
-                Text("+", fontSize = 24.sp, color = Color.White)
+                Text("+", fontSize = fabFontSize, color = Color.White)
             }
         }
 

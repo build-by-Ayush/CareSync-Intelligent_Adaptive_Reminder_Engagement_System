@@ -21,7 +21,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 
 /**
- * Dialog for selecting an app to launch from the task
+ * Dialog for selecting an app to block
  */
 @Composable
 fun AppPickerDialog(
@@ -38,11 +38,11 @@ fun AppPickerDialog(
         Surface(
             modifier = Modifier
                 .fillMaxWidth(0.9f)
-                .fillMaxHeight(0.7f),
+                .fillMaxHeight(0.8f),
             shape = RoundedCornerShape(16.dp),
             color = Color(0xFF262131)
         ) {
-            Column {
+            Column(modifier = Modifier.fillMaxSize()) {
                 // Header
                 Box(
                     modifier = Modifier
@@ -51,28 +51,51 @@ fun AppPickerDialog(
                         .padding(16.dp)
                 ) {
                     Text(
-                        text = "Select App",
+                        text = "Select App to Block",
                         color = Color.White,
                         fontSize = 20.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
 
+                // App Count
+                Text(
+                    text = "Found ${installedApps.size} apps",
+                    color = Color.Gray,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(12.dp)
+                )
+
                 // App List
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(8.dp)
-                ) {
-                    items(installedApps.size) { index ->
-                        val app = installedApps[index]
-                        AppListItem(
-                            appInfo = app,
-                            onClick = {
-                                onAppSelected(app)
-                                onDismiss()
-                            }
+                if (installedApps.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(16.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "No apps found",
+                            color = Color.White,
+                            fontSize = 16.sp
                         )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(8.dp)
+                    ) {
+                        items(installedApps.size) { index ->
+                            val app = installedApps[index]
+                            AppListItem(
+                                appInfo = app,
+                                onClick = {
+                                    onAppSelected(app)
+                                    onDismiss()
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -89,23 +112,35 @@ fun AppListItem(appInfo: AppInfo, onClick: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(12.dp),
+            .padding(12.dp)
+            .background(Color(0xFF3A3542), RoundedCornerShape(8.dp))
+            .padding(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         // App Icon
         Image(
             painter = rememberDrawablePainter(drawable = appInfo.icon),
             contentDescription = appInfo.label,
-            modifier = Modifier.size(40.dp)
+            modifier = Modifier
+                .size(40.dp)
+                .background(Color.Gray, RoundedCornerShape(4.dp))
         )
 
         Spacer(modifier = Modifier.width(12.dp))
 
-        // App Label
-        Text(
-            text = appInfo.label,
-            color = Color.White,
-            fontSize = 16.sp
-        )
+        // App Label + Package
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = appInfo.label,
+                color = Color.White,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = appInfo.packageName,
+                color = Color.Gray,
+                fontSize = 12.sp
+            )
+        }
     }
 }

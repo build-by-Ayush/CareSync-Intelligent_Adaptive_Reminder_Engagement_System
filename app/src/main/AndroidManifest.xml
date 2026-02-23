@@ -2,6 +2,15 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- 🔍 Required for Android 11+ to query installed apps -->
+    <queries>
+        <!-- Allows listing all launchable (user-visible) apps like YouTube, Instagram, etc. -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <!-- Notification permission (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
@@ -10,9 +19,6 @@
 
     <!-- WorkManager background tasks -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-
-    <!-- Internet (for ML model later) -->
-    <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- Reschedule alarms after reboot -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -86,6 +92,15 @@
         <receiver
             android:name=".receivers.SnoozeAlarmReceiver"
             android:exported="false" />
+
+        <receiver
+            android:name=".receivers.SessionAlarmReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.example.caresync.SESSION_ALARM" />
+            </intent-filter>
+        </receiver>
+
 
         <!-- ✅ App Block Service -->
         <service

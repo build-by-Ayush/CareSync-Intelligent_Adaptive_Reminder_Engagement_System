@@ -1,8 +1,10 @@
 package com.example.caresync.ui.components
 
 import android.content.Context
-import android.content.Intent
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
+import android.util.Log
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.geometry.Size
@@ -21,27 +23,49 @@ data class AppInfo(
 )
 
 /**
- * Get list of all installed launcher apps
+ * ✅ Get ONLY user-installed apps (Play Store apps)
  */
 fun getInstalledApps(context: Context): List<AppInfo> {
-    val packageManager = context.packageManager
-    val mainIntent = Intent(Intent.ACTION_MAIN, null).apply {
-        addCategory(Intent.CATEGORY_LAUNCHER)
+    val pm = context.packageManager
+
+    return try {
+        val packages = pm.getInstalledApplications(PackageManager.GET_META_DATA)
+
+        val apps = packages
+            .filter { app ->
+                // ✅ Only launchable apps
+                pm.getLaunchIntentForPackage(app.packageName) != null &&
+                        // ✅ Exclude the host app
+                        app.packageName != context.packageName &&
+                        // ✅ Exclude pure system apps, but ALLOW updated system apps (YouTube, Chrome)
+                        (app.flags and ApplicationInfo.FLAG_SYSTEM == 0 ||
+                                app.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP != 0)
+            }
+            .mapNotNull { app ->
+                try {
+                    val label = pm.getApplicationLabel(app).toString()
+                    val icon = pm.getApplicationIcon(app.packageName)
+
+                    if (label.isBlank()) return@mapNotNull null
+
+                    AppInfo(
+                        label = label,
+                        packageName = app.packageName,
+                        icon = icon
+                    )
+                } catch (e: Exception) {
+                    null
+                }
+            }
+            .distinctBy { it.packageName }
+            .sortedBy { it.label.lowercase() }
+
+        Log.d("APP_PICKER", "✅ Found ${apps.size} visible apps")
+        apps
+    } catch (e: Exception) {
+        Log.e("APP_PICKER", "❌ Error: ${e.message}", e)
+        emptyList()
     }
-
-    val apps = packageManager.queryIntentActivities(mainIntent, 0)
-        .map { resolveInfo ->
-            AppInfo(
-                label = resolveInfo.loadLabel(packageManager).toString(),
-                packageName = resolveInfo.activityInfo.packageName,
-                icon = resolveInfo.loadIcon(packageManager)
-            )
-        }
-        .distinctBy { it.packageName }  // ✅ ADD: Remove duplicate packages
-        .sortedBy { it.label.lowercase() }
-
-    android.util.Log.d("APP_PICKER", "✅ Found ${apps.size} apps")  // ✅ ADD: Debug log
-    return apps
 }
 
 

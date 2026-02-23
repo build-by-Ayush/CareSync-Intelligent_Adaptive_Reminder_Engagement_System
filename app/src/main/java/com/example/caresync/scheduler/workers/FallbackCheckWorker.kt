@@ -80,12 +80,10 @@ class FallbackCheckWorker(
             val currentHour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
             val isGoodTime = checkIfGoodTime(reminder, currentHour)
 
-            // STEP 3: Run through decision pipeline (still check blocking rules)
+            // ✅ STEP 3: Run through decision pipeline (still check blocking rules)
             val pipeline = NotificationDecisionPipeline(context)
             val decision = pipeline.shouldSendNotification(
-                reminder,
-                mlPrediction = null,  // No ML prediction for fallback
-                mlConfidence = null,
+                reminder = reminder,
                 bypassCooldown = true,
                 triggerSource = "FALLBACK"
             )
@@ -105,17 +103,19 @@ class FallbackCheckWorker(
                     actualTone = actualTone,
                     slotStart = slotStart,
                     slotEnd = slotEnd,
-                    isSmartFallback = isGoodTime  // ✅ Track if this was smart or random
+                    isSmartFallback = isGoodTime
                 )
 
                 eventDao.insert(event)
 
-                // Fire fallback notification
+                // ✅ Fire fallback notification with all parameters
                 com.example.caresync.scheduler.ReminderWorker.showNotificationFromML(
-                    context,
-                    reminderId,
-                    reminder.title,
-                    personalizedMessage
+                    context = context,
+                    reminderId = reminderId,
+                    title = reminder.title,
+                    content = personalizedMessage,
+                    reminder = reminder,
+                    actualTone = actualTone
                 )
 
                 val fallbackType = if (isGoodTime) "smart (learned time)" else "random"

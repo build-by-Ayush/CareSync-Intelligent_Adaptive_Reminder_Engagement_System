@@ -1,6 +1,7 @@
 package com.example.caresync.analytics.data
 
 import androidx.room.*
+import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface AnalyticsDao {
@@ -17,6 +18,9 @@ interface AnalyticsDao {
 
     @Update
     suspend fun updateUserProgress(progress: UserProgressEntity)
+
+    @Query("SELECT * FROM user_progress WHERE id = 1")
+    fun getUserProgressFlow(): Flow<UserProgressEntity?>
 
     // ==========================================
     // ACHIEVEMENT OPERATIONS
@@ -39,13 +43,6 @@ interface AnalyticsDao {
     // ==========================================
 
     @Query("""
-        SELECT COUNT(*) 
-        FROM reminder_events 
-        WHERE eventType = 'COMPLETED'
-    """)
-    suspend fun getTotalCompletionsCount(): Int
-
-    @Query("""
         SELECT hourOfDay, COUNT(*) as count 
         FROM reminder_events 
         WHERE eventType = 'COMPLETED' 
@@ -63,10 +60,6 @@ interface AnalyticsDao {
     """)
     suspend fun getDailyCompletions(startDate: Long): List<DayCount>
 
-    /**
-     * ✅ UPDATED: Exclude snooze re-triggers AND boost notifications
-     * Follows KPI rule: Count snooze as 1, ignore boost completely
-     */
     @Query("""
         SELECT toneUsed, 
                SUM(CASE WHEN eventType = 'TRIGGERED' 
@@ -80,9 +73,56 @@ interface AnalyticsDao {
     """)
     suspend fun getToneStats(): List<ToneStatsRaw>
 
+    @Query("""
+        SELECT 
+            DATE(timestamp / 1000, 'unixepoch') as date,
+            COUNT(CASE WHEN eventType = 'TRIGGERED' AND isSnoozedRetrigger = 0 THEN 1 END) as totalNotifications,
+            COUNT(CASE WHEN eventType = 'COMPLETED' AND isSnoozedRetrigger = 0 THEN 1 END) as totalCompletions
+        FROM reminder_events
+        WHERE timestamp >= :startDate 
+          AND timestamp <= :endDate
+          AND (triggerSource IS NULL OR triggerSource NOT LIKE '%BOOST%')
+        GROUP BY DATE(timestamp / 1000, 'unixepoch')
+        ORDER BY date ASC
+    """)
+    suspend fun getDailyCompletionStats(
+        startDate: Long,
+        endDate: Long
+    ): List<DailyCompletionStats>
+
+    @Query("""
+        SELECT COUNT(*) 
+        FROM reminder_events 
+        WHERE eventType = 'COMPLETED' AND isSnoozedRetrigger = 0
+    """)
+    suspend fun getTotalCompletionsCount(): Int
+
 }
 
-// Data classes
+// ==========================================
+// DATA CLASSES
+// ==========================================
+
 data class HourCount(val hourOfDay: Int, val count: Int)
+
 data class DayCount(val date: String, val count: Int)
+
 data class ToneStatsRaw(val toneUsed: String, val totalSent: Int, val completed: Int)
+
+data class DailyCompletionStats(
+    @ColumnInfo(name = "date")
+    val date: String,
+
+    @ColumnInfo(name = "totalNotifications")
+    val totalNotifications: Int,
+
+    @ColumnInfo(name = "totalCompletions")
+    val totalCompletions: Int
+) {
+    val completionRate: Float
+        get() = if (totalNotifications > 0) {
+            totalCompletions.toFloat() / totalNotifications
+        } else {
+            0f
+        }
+}

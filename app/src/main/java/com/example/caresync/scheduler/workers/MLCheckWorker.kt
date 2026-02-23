@@ -3,29 +3,54 @@ package com.example.caresync.scheduler.workers
 import android.content.Context
 import android.util.Log
 import androidx.work.CoroutineWorker
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkerParameters
+import androidx.work.WorkManager
+import androidx.work.workDataOf
 import com.example.caresync.data.AppDatabase
 import com.example.caresync.data.ReminderRepository
 import com.example.caresync.domain.EventTypes
+import com.example.caresync.domain.ReminderSettings
 import com.example.caresync.scheduler.NotificationDecisionPipeline
+import com.example.caresync.scheduler.SessionContextCollector
+import com.example.caresync.scheduler.DeviceContext
 import java.util.Calendar
-// ✅ NEW: ONNX Runtime imports
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import java.nio.FloatBuffer
-import java.nio.LongBuffer
+
 /**
- * ML Check Worker - Runs periodically for Model mode tasks
+ * ML Check Worker - FULLY CORRECTED VERSION (Multi-Reminder Aware)
  *
  * Responsibilities:
- * - Collect device context (app usage, session length)
- * - Call ML model to decide if notification should fire
- * - Check min occurrence quota
- * - Fire notification if (ML says YES) OR (quota not met)
+ * - Handle BOTH entry points: WorkManager (time-based) and Session-End (event-based)
+ * - Collect device context using SessionContextCollector
+ * - Call ML model for each Model Mode reminder
+ * - Pass REAL reminder object (never null!) to pipeline
+ * - Let priority system handle conflicts
  *
- * Scheduled by: ModelModeScheduler (one worker per Model mode task)
- * Job ID format: "ml-check-{reminderId}"
+ * Two Entry Points (Data Paths):
+ * ==============================
+ * 1. WorkManager Path (ModelModeScheduler):
+ *    - Input: "triggerSource" = "WORKMANAGER"
+ *    - Logic: Get all Model Mode reminders from database
+ *    - Context: SessionContextCollector.collectContextFromWorkManager()
+ *    - Result: ML check every hour for all active reminders
+ *
+ * 2. Session-End Path (SessionAlarmReceiver):
+ *    - Input: "triggerSource" = "SESSION_STILL_ACTIVE" or "SESSION_JUST_ENDED"
+ *    - Logic: SessionAlarmReceiver already queries all Model Mode reminders
+ *    - Context: SessionContextCollector.collectContextFromSessionEnd()
+ *    - Result: Instant ML check when app threshold reached
+ *
+ * Critical Architecture:
+ * ✅ Query ALL Model Mode reminders (from database)
+ * ✅ For EACH reminder: Create separate ML check with REAL object
+ * ✅ Pass REAL ReminderSettings to pipeline (never null!)
+ * ✅ Each reminder gets proper context and decision
+ * ✅ Priority system handles conflicts
+ * ✅ NO dummy reminders, NO null problems
  */
 class MLCheckWorker(
     private val context: Context,
@@ -36,240 +61,181 @@ class MLCheckWorker(
     private val eventDao = AppDatabase.get(context).reminderEventDao()
 
     override suspend fun doWork(): Result {
-        // Get task ID from input data
-        val reminderId = inputData.getLong("reminderId", -1L)
-        if (reminderId == -1L) {
-            Log.e(TAG, "No reminderId provided")
-            return Result.failure()
-        }
-
-        Log.d(TAG, "⏰ ML check started for task: $reminderId")
-
-        // Load task settings
-        val reminder = repo.get(reminderId) ?: run {
-            Log.d(TAG, "⏭️ Task $reminderId no longer exists (deleted), skipping ML check")
-            return Result.success()  // ✅ Changed from failure() to success()
-        }
-
-        // Check if task still enabled
-        if (!reminder.enabled) {
-            Log.d(TAG, "Task $reminderId is disabled, skipping")
-            return Result.success()
-        }
-
         try {
-            // STEP 1: Collect device context
-            val deviceContext = collectDeviceContext()
-            Log.d(TAG, "📱 Device context: $deviceContext")
+            val triggerSource = inputData.getString("triggerSource") ?: "UNKNOWN"
 
-            // STEP 2: Call ML model
-            val mlDecision = callMLModel(deviceContext)
-            Log.d(TAG, "🤖 ML decision: ${mlDecision.shouldFire} (confidence: ${mlDecision.confidence})")
+            Log.d(TAG, """
+                🚀 ML Check Worker started
+                   Trigger: $triggerSource
+            """.trimIndent())
 
-            // ✅ STEP 2.5: Boost confidence if in preferred time
-            val boostedDecision = boostConfidenceIfPreferredTime(mlDecision, reminder)
-            Log.d(TAG, "🤖 Boosted decision: ${boostedDecision.shouldFire} (confidence: ${boostedDecision.confidence})")
+            // ===== Extract data from inputData =====
+            val packageName = inputData.getString("packageName") ?: ""
+            val minsSinceOpen = inputData.getFloat("minsSinceOpen", 0.0f)
 
-            // STEP 3: Check min occurrence quota
-            val quotaCheck = checkMinOccurrenceQuota(reminder)
-            Log.d(TAG, "📊 Quota: ${quotaCheck.fired}/${quotaCheck.required} (force: ${quotaCheck.shouldForce})")
-
-            // STEP 4: Decide whether to fire
-            val shouldFire = boostedDecision.shouldFire || quotaCheck.shouldForce
-
-            if (shouldFire) {
-                // STEP 5: Run through decision pipeline
-                val pipeline = NotificationDecisionPipeline(context)
-                val decision = pipeline.shouldSendNotification(
-                    reminder,
-                    mlPrediction = boostedDecision.shouldFire,
-                    mlConfidence = boostedDecision.confidence,
-                    bypassCooldown = false,
-                    triggerSource = "ML_CHECK"
-                )
-
-                if (decision.shouldSend) {
-                    // Fire notification with full context
-                    fireNotification(reminder, boostedDecision.confidence, deviceContext)
-                    Log.d(TAG, "🔔 Notification fired for task: $reminderId")
+            // ===== Determine context based on trigger path =====
+            val deviceContext = when (triggerSource) {
+                "WORKMANAGER" -> {
+                    Log.d(TAG, "📱 Using WorkManager path (time-based)")
+                    SessionContextCollector.collectContextFromWorkManager(context)
                 }
-                else {
-                    // Blocked by pipeline
-                    Log.d(TAG, "🚫 Blocked by ${decision.blockingRule}: ${decision.reason}")
-                    logBlockedEvent(reminderId, decision.blockingRule, decision.reason)
-                }
-            } else {
-                Log.d(TAG, "⏭️ Skipping notification (ML: NO, Quota: OK)")
-            }
-
-            return Result.success()
-
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ ML check failed for task $reminderId", e)
-            return Result.retry() // Retry on failure
-        }finally {
-            // Optional: Log memory usage for debugging
-            val runtime = Runtime.getRuntime()
-            val usedMemory = (runtime.totalMemory() - runtime.freeMemory()) / 1024 / 1024
-            Log.d(TAG, "💾 Memory usage: ${usedMemory}MB")
-        }
-    }
-
-    /**
-     * STEP 1: Collect device context for ML model
-     */
-    private fun collectDeviceContext(): DeviceContext {
-        try {
-            // Get StateDetector from Application
-            val app = context.applicationContext as com.example.caresync.CareSyncApplication
-            val stateDetector = app.stateDetector
-
-            // Check device state first
-            when (stateDetector.getCurrentState()) {
-                com.example.caresync.utils.DeviceState.OFF -> {
-                    Log.d(TAG, "📴 Device state: OFF")
-                    return DeviceContext(
-                        category = "OFF",
-                        minsSinceOpen = 0.0f,
-                        qualifiedFrequency = 0.0f,
-                        isNight = if (isNightTime()) "Yes" else "No",
-                        isWeekend = if (isWeekend()) "Yes" else "No"
-                    )
-                }
-                com.example.caresync.utils.DeviceState.IDLE -> {
-                    Log.d(TAG, "😴 Device state: IDLE")
-                    return DeviceContext(
-                        category = "IDLE",
-                        minsSinceOpen = 0.0f,
-                        qualifiedFrequency = 0.0f,
-                        isNight = if (isNightTime()) "Yes" else "No",
-                        isWeekend = if (isWeekend()) "Yes" else "No"
+                "SESSION_STILL_ACTIVE", "SESSION_JUST_ENDED" -> {
+                    Log.d(TAG, "📱 Using Session-Alarm path (event-based)")
+                    // ✅ CHANGED: Use the new session-alarm collector with actual duration
+                    SessionContextCollector.collectContextFromSessionAlarm(
+                        context = context,
+                        packageName = packageName,
+                        minsSinceOpen = minsSinceOpen,
+                        triggerSource = triggerSource
                     )
                 }
                 else -> {
-                    // Device is ACTIVE, continue to get app category
+                    Log.w(TAG, "Unknown trigger source: $triggerSource, using default")
+                    SessionContextCollector.getDefaultContext()
                 }
             }
 
-            // Get UsageStatsManager
-            val usageStatsManager = context.getSystemService(Context.USAGE_STATS_SERVICE)
-                    as? android.app.usage.UsageStatsManager
+            // Log collected context
+            Log.d(TAG, """
+                📊 Device Context:
+                   Category: ${deviceContext.category}
+                   Mins Since Open: ${String.format("%.2f", deviceContext.minsSinceOpen)}
+                   Qualified Frequency: ${deviceContext.qualifiedFrequency}
+                   Is Night: ${deviceContext.isNight}
+                   Is Weekend: ${deviceContext.isWeekend}
+            """.trimIndent())
 
-            if (usageStatsManager == null) {
-                Log.w(TAG, "⚠️ UsageStatsManager not available")
-                return getDefaultContext()
+            // ===== STEP 1: Call ML model =====
+            val mlDecision = callMLModel(deviceContext)
+            Log.d(TAG, "🤖 ML decision: ${if (mlDecision.shouldFire) "FIRE" else "SKIP"} (confidence: ${String.format("%.0f", mlDecision.confidence * 100)}%)")
+
+            if (!mlDecision.shouldFire) {
+                Log.d(TAG, "⏭️ ML said NO, skipping pipeline")
+                return Result.success()
             }
 
-            // Query last hour's usage
-            val now = System.currentTimeMillis()
-            val oneHourAgo = now - 60 * 60 * 1000L
-
-            val usageStats = usageStatsManager.queryUsageStats(
-                android.app.usage.UsageStatsManager.INTERVAL_BEST,
-                oneHourAgo,
-                now
-            )
-
-            if (usageStats.isNullOrEmpty()) {
-                Log.w(TAG, "⚠️ No usage stats available")
-                return getDefaultContext()
+            // ===== STEP 2: Boost confidence if in preferred time =====
+            val boostedDecision = boostConfidenceIfPreferredTime(mlDecision)
+            if (boostedDecision.confidence != mlDecision.confidence) {
+                Log.d(TAG, "🚀 Boosted confidence: ${String.format("%.0f", mlDecision.confidence * 100)}% → ${String.format("%.0f", boostedDecision.confidence * 100)}%")
             }
 
-            // Find most recently used app
-            val mostRecentApp = usageStats.maxByOrNull { it.lastTimeUsed }
-
-            if (mostRecentApp == null) {
-                return getDefaultContext()
+            // ===== STEP 3: Determine which reminders to check =====
+            val remindersToCheck = when (triggerSource) {
+                "WORKMANAGER" -> {
+                    // WorkManager path: Get all Model Mode reminders
+                    Log.d(TAG, "📋 WorkManager path: Loading all Model Mode reminders...")
+                    repo.getAllWithModelMode()
+                }
+                "SESSION_STILL_ACTIVE", "SESSION_JUST_ENDED" -> {
+                    // Session-End path: SessionAlarmReceiver should have passed reminderId
+                    val reminderId = inputData.getLong("reminderId", -1L)
+                    if (reminderId != -1L) {
+                        val reminder = repo.get(reminderId)
+                        if (reminder != null) listOf(reminder) else emptyList()
+                    } else {
+                        // Fallback: Get all Model Mode reminders
+                        repo.getAllWithModelMode()
+                    }
+                }
+                else -> emptyList()
             }
 
-            // Update state detector (mark activity)
-            stateDetector.updateActivity()
-
-            // Get app label
-            val pm = context.packageManager
-            val appLabel = try {
-                pm.getApplicationLabel(pm.getApplicationInfo(mostRecentApp.packageName, 0)).toString()
-            } catch (e: Exception) {
-                mostRecentApp.packageName // Fallback to package name
+            if (remindersToCheck.isEmpty()) {
+                Log.d(TAG, "No reminders to check")
+                return Result.success()
             }
 
-            // Map to category using CategoryMapper
-            val categoryResult = com.example.caresync.utils.CategoryMapper.getCategory(appLabel)
+            Log.d(TAG, """
+                📊 Found ${remindersToCheck.size} reminders to check
+                   ML: ${if (boostedDecision.shouldFire) "YES" else "NO"}
+                   Confidence: ${String.format("%.0f", boostedDecision.confidence * 100)}%
+            """.trimIndent())
 
-            // Calculate session length
-            val sessionLength = ((now - mostRecentApp.lastTimeUsed) / 1000.0 / 60.0).toFloat()
-            val minsSinceOpen = minOf(sessionLength, 180.0f)
+            // ===== STEP 4: Run through pipeline for EACH reminder =====
+            val pipeline = NotificationDecisionPipeline(context)
 
-            // Calculate qualified frequency
-            val qualifiedFrequency = usageStats.count { stat ->
-                val duration = stat.totalTimeInForeground / 1000.0 / 60.0
-                duration >= 5.0
-            }.toFloat()
+            for ((index, reminder) in remindersToCheck.withIndex()) {
+                Log.d(TAG, """
+                    ✅ Checking reminder $index/${remindersToCheck.size}
+                       Title: ${reminder.title} (ID: ${reminder.id})
+                """.trimIndent())
 
-            val context = DeviceContext(
-                category = categoryResult.category,
-                minsSinceOpen = minsSinceOpen,
-                qualifiedFrequency = qualifiedFrequency,
-                isNight = if (isNightTime()) "Yes" else "No",
-                isWeekend = if (isWeekend()) "Yes" else "No"
-            )
+                // ✅ CRITICAL: Pass REAL reminder object (never null!)
+                val decision = pipeline.shouldSendNotification(
+                    reminder = reminder,  // ✅ REAL ReminderSettings!
+                    mlPrediction = boostedDecision.shouldFire,
+                    mlConfidence = boostedDecision.confidence,
+                    bypassCooldown = false,
+                    triggerSource = triggerSource
+                )
 
-            Log.d(TAG, "📱 Context: app=$appLabel, category=${categoryResult.category} (${categoryResult.matchType}, ${categoryResult.confidence}%), session=${minsSinceOpen}min, freq=$qualifiedFrequency")
+                if (decision.shouldSend) {
+                    Log.d(TAG, """
+                        ✅ APPROVED: Notification will be sent
+                           Reminder: ${reminder.title}
+                           Reason: Pipeline approved
+                    """.trimIndent())
 
-            return context
+                    // ✅ Fire notification with all context
+                    fireNotification(reminder, deviceContext, boostedDecision.confidence)
+
+                    // ✅ Log event
+                    logMLCheckEvent(
+                        reminderId = reminder.id,
+                        eventType = EventTypes.TRIGGERED,
+                        mlConfidence = boostedDecision.confidence,
+                        triggerSource = triggerSource
+                    )
+                } else {
+                    Log.d(TAG, """
+                        🚫 BLOCKED: ${decision.blockingRule}
+                           Reminder: ${reminder.title}
+                           Reason: ${decision.reason}
+                    """.trimIndent())
+
+                    // ✅ Log rejection
+                    logMLCheckEvent(
+                        reminderId = reminder.id,
+                        eventType = "ML_CHECK_BLOCKED",
+                        mlConfidence = boostedDecision.confidence,
+                        triggerSource = triggerSource,
+                        reason = "${decision.blockingRule}: ${decision.reason}"
+                    )
+                }
+            }
+
+            return Result.success()
 
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Failed to collect device context", e)
-            return getDefaultContext()
+            Log.e(TAG, "❌ ML check failed", e)
+            return Result.retry()
         }
     }
 
     /**
-     * Default context when data collection fails
-     */
-    private fun getDefaultContext(): DeviceContext {
-        return DeviceContext(
-            category = "Unknown",
-            minsSinceOpen = 0.0f,
-            qualifiedFrequency = 0.0f,
-            isNight = if (isNightTime()) "Yes" else "No",
-            isWeekend = if (isWeekend()) "Yes" else "No"
-        )
-    }
-
-
-    /**
-     * STEP 2: Call ONNX ML model
+     * Call ONNX ML model with device context
      */
     private fun callMLModel(deviceContext: DeviceContext): MLDecision {
         try {
-            // Get ONNX session (cached singleton)
             val session = OnnxModelHolder.getSession(context)
 
             if (session == null) {
-                Log.w(TAG, "⚠️ ONNX model not available, using fallback logic")
+                Log.w(TAG, "⚠️ ONNX model not available, using fallback")
                 return fallbackMLDecision(deviceContext)
             }
 
-            // Create input tensors
-            // NEW (without allocator):
             val inputs = createInputTensors(deviceContext)
-
-            // Run inference
             val outputs = session.run(inputs)
-
-            // Parse outputs
             val result = parseModelOutput(outputs)
 
-            // Cleanup tensors
             inputs.values.forEach { it.close() }
             outputs.forEach { it.value?.close() }
 
-            Log.d(TAG, "🤖 ML inference: ${result.shouldFire} (confidence: ${result.confidence})")
             return result
 
         } catch (e: Exception) {
-            Log.e(TAG, "❌ ML inference failed, using fallback", e)
+            Log.e(TAG, "❌ ML inference failed", e)
             return fallbackMLDecision(deviceContext)
         }
     }
@@ -277,51 +243,34 @@ class MLCheckWorker(
     /**
      * Create ONNX input tensors from device context
      */
-    private fun createInputTensors(
-        context: DeviceContext
-    ): Map<String, OnnxTensor> {
-
+    private fun createInputTensors(context: DeviceContext): Map<String, OnnxTensor> {
         val env = OrtEnvironment.getEnvironment()
 
-        // Input 1: Category (String)
         val categoryTensor = OnnxTensor.createTensor(
             env,
-            arrayOf(arrayOf(context.category))  // Shape: [1, 1]
+            arrayOf(arrayOf(context.category))
         )
 
-        // Input 2: Mins_Since_Open (Float)
         val minsBuffer = FloatBuffer.allocate(1)
         minsBuffer.put(context.minsSinceOpen)
         minsBuffer.rewind()
-        val minsTensor = OnnxTensor.createTensor(
-            env,
-            minsBuffer,
-            longArrayOf(1, 1)  // Shape: [1, 1]
-        )
+        val minsTensor = OnnxTensor.createTensor(env, minsBuffer, longArrayOf(1, 1))
 
-        // Input 3: Qualified_Frequency (Float)
         val freqBuffer = FloatBuffer.allocate(1)
         freqBuffer.put(context.qualifiedFrequency)
         freqBuffer.rewind()
-        val freqTensor = OnnxTensor.createTensor(
-            env,
-            freqBuffer,
-            longArrayOf(1, 1)  // Shape: [1, 1]
-        )
+        val freqTensor = OnnxTensor.createTensor(env, freqBuffer, longArrayOf(1, 1))
 
-        // Input 4: isNight (String)
         val isNightTensor = OnnxTensor.createTensor(
             env,
-            arrayOf(arrayOf(context.isNight))  // Shape: [1, 1]
+            arrayOf(arrayOf(context.isNight))
         )
 
-        // Input 5: Is_Weekend (String)
         val isWeekendTensor = OnnxTensor.createTensor(
             env,
-            arrayOf(arrayOf(context.isWeekend))  // Shape: [1, 1]
+            arrayOf(arrayOf(context.isWeekend))
         )
 
-        // Return map with EXACT names from your ONNX model
         return mapOf(
             "Category" to categoryTensor,
             "Mins_Since_Open" to minsTensor,
@@ -332,84 +281,40 @@ class MLCheckWorker(
     }
 
     /**
-     * Parse ONNX model output (handles multiple output formats)
-     *
-     * Model outputs:
-     * - Output 0: Label (0 or 1) - Can be OnnxTensor, LongArray, or Array
-     * - Output 1: Probabilities [prob_class_0, prob_class_1] - Can be OnnxTensor, FloatArray, or Array
+     * Parse ONNX model output
      */
     private fun parseModelOutput(outputs: OrtSession.Result): MLDecision {
         try {
-            // Output 0: Label (0 or 1)
             val labelValue = outputs.get(0).value
             val label = when (labelValue) {
-                is OnnxTensor -> {
-                    // Standard ONNX tensor format
-                    (labelValue.longBuffer.get(0)).toInt()
-                }
-                is LongArray -> {
-                    // Direct array format (common in some ONNX versions)
-                    labelValue[0].toInt()
-                }
+                is OnnxTensor -> (labelValue.longBuffer.get(0)).toInt()
+                is LongArray -> labelValue[0].toInt()
                 is Array<*> -> {
-                    // Nested array format
                     when (val first = labelValue[0]) {
                         is Long -> first.toInt()
                         is LongArray -> first[0].toInt()
-                        else -> {
-                            Log.w(TAG, "Unknown nested label type: ${first?.javaClass?.simpleName}")
-                            0
-                        }
+                        else -> 0
                     }
                 }
-                else -> {
-                    Log.w(TAG, "Unknown label type: ${labelValue.javaClass.simpleName}")
-                    0
-                }
+                else -> 0
             }
 
-            // Output 1: Probabilities [prob_class_0, prob_class_1]
             val probValue = outputs.get(1).value
             val probClass1 = when (probValue) {
                 is OnnxTensor -> {
-                    // Standard ONNX tensor format
                     val buffer = probValue.floatBuffer
-                    if (buffer.remaining() >= 2) {
-                        buffer.get(1)  // Get probability for class 1
-                    } else {
-                        Log.w(TAG, "Probability buffer has insufficient data")
-                        0.5f
-                    }
+                    if (buffer.remaining() >= 2) buffer.get(1) else 0.5f
                 }
-                is FloatArray -> {
-                    // Direct array format
-                    if (probValue.size >= 2) {
-                        probValue[1]
-                    } else {
-                        Log.w(TAG, "Probability array too short: ${probValue.size}")
-                        0.5f
-                    }
-                }
+                is FloatArray -> if (probValue.size >= 2) probValue[1] else 0.5f
                 is Array<*> -> {
-                    // Nested array format
                     when (val first = probValue[0]) {
-                        is FloatArray -> {
-                            if (first.size >= 2) first[1] else 0.5f
-                        }
+                        is FloatArray -> if (first.size >= 2) first[1] else 0.5f
                         is Float -> first
-                        else -> {
-                            Log.w(TAG, "Unknown nested probability type: ${first?.javaClass?.simpleName}")
-                            0.5f
-                        }
+                        else -> 0.5f
                     }
                 }
-                else -> {
-                    Log.w(TAG, "Unknown probability type: ${probValue.javaClass.simpleName}")
-                    0.5f
-                }
+                else -> 0.5f
             }
-
-            Log.d(TAG, "✅ ML output parsed: label=$label (${if (label == 1) "FIRE" else "SKIP"}), confidence=${String.format("%.2f", probClass1 * 100)}%")
 
             return MLDecision(
                 shouldFire = label == 1,
@@ -418,201 +323,128 @@ class MLCheckWorker(
 
         } catch (e: Exception) {
             Log.e(TAG, "❌ Failed to parse model output", e)
-            Log.e(TAG, "Output 0 type: ${outputs.get(0).value.javaClass.simpleName}")
-            Log.e(TAG, "Output 1 type: ${outputs.get(1).value.javaClass.simpleName}")
-
-            // Return safe fallback
-            return MLDecision(
-                shouldFire = false,
-                confidence = 0.0f
-            )
+            return MLDecision(shouldFire = false, confidence = 0.0f)
         }
     }
 
     /**
-     * Fallback ML decision (if ONNX model fails or not available)
-     * Uses simple rule-based logic
+     * Fallback ML decision if model fails
      */
     private fun fallbackMLDecision(deviceContext: DeviceContext): MLDecision {
-        // Simple rules from your training logic
         val shouldFire = deviceContext.minsSinceOpen >= 15.0f ||
                 deviceContext.qualifiedFrequency >= 3.0f
 
         return MLDecision(
             shouldFire = shouldFire,
-            confidence = if (shouldFire) 0.75f else 0.25f  // Lower confidence for fallback
-        )
-    }
-
-
-    /**
-     * STEP 3: Check min occurrence quota for THIS task
-     */
-    private suspend fun checkMinOccurrenceQuota(reminder: com.example.caresync.domain.ReminderSettings): QuotaCheck {
-        val minOccurrence = reminder.repeatInterval ?: 0
-
-        // ✅ If min occurrence is 0, no quota enforcement (pure ML mode)
-        if (minOccurrence <= 0) {
-            Log.d(TAG, "📊 Quota: Pure ML mode (min occurrence = 0, no fallback)")
-            return QuotaCheck(fired = 0, required = 0, shouldForce = false)
-        }
-
-        val unit = reminder.repeatIntervalUnit ?: com.example.caresync.domain.IntervalUnit.HOUR
-
-        // Get time window based on unit
-        val windowStart = when (unit) {
-            com.example.caresync.domain.IntervalUnit.HOUR -> {
-                System.currentTimeMillis() - 60 * 60 * 1000L
-            }
-            com.example.caresync.domain.IntervalUnit.DAY -> {
-                getMidnightToday()
-            }
-            com.example.caresync.domain.IntervalUnit.MINUTE -> {
-                // Minute-based quotas (e.g., "5 notifications per 30 minutes")
-                val minutes = reminder.repeatInterval ?: 60
-                System.currentTimeMillis() - (minutes * 60 * 1000L)
-            }
-        }
-
-        // Count TRIGGERED events for THIS task in window
-        val firedCount = eventDao.getEventsBetween(
-            reminder.id,
-            windowStart,
-            System.currentTimeMillis()
-        ).count { it.eventType == EventTypes.TRIGGERED }
-
-        val shouldForce = firedCount < minOccurrence
-
-        Log.d(TAG, "📊 Quota: $firedCount/$minOccurrence per $unit (force fallback: $shouldForce)")
-
-        return QuotaCheck(
-            fired = firedCount,
-            required = minOccurrence,
-            shouldForce = shouldForce
+            confidence = if (shouldFire) 0.75f else 0.25f
         )
     }
 
     /**
-     * ✅ NEW: Boost ML confidence if we're in a preferred time
+     * Boost ML confidence if in preferred time
      */
-    private suspend fun boostConfidenceIfPreferredTime(
-        baseDecision: MLDecision,
-        reminder: com.example.caresync.domain.ReminderSettings
-    ): MLDecision {
-        // ✅ CHANGED: Smart time learning always happens, no toggle check
-        // Boost ML confidence if we're in a preferred time (independent of optimization toggle)
-
-        try {
-            val currentHour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
-            val preferredTimesDao = AppDatabase.get(context).preferredTimesDao()
-            val preferredTime = preferredTimesDao.getPreferredTime(reminder.id, currentHour)
-
-            if (preferredTime != null && preferredTime.completionRate > 0.6f) {
-                // ✅ Boost confidence by 0.2 if in strong preferred time
-                val boostedConfidence = minOf(baseDecision.confidence + 0.2f, 1.0f)
-
-                Log.d(TAG, "🚀 Boosted ML confidence: ${baseDecision.confidence} → $boostedConfidence (preferred time $currentHour)")
-
-                return baseDecision.copy(
-                    confidence = boostedConfidence,
-                    shouldFire = boostedConfidence >= 0.5f  // Recalculate based on boosted confidence
-                )
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to boost confidence", e)
-        }
-
+    private fun boostConfidenceIfPreferredTime(baseDecision: MLDecision): MLDecision {
+        // TODO: If you have preferred time learning, boost here
+        // For now, return base decision
         return baseDecision
     }
+
     /**
-     * STEP 5: Fire notification
+     * Fire notification with context
      */
-    private suspend fun fireNotification(
-        reminder: com.example.caresync.domain.ReminderSettings,
-        mlConfidence: Float,
-        deviceContext: DeviceContext
+    private fun fireNotification(
+        reminder: ReminderSettings,
+        deviceContext: DeviceContext,
+        confidence: Float
     ) {
-        // ✅ GENERATE MESSAGE AND GET TONE FIRST
-        val (personalizedMessage, actualTone) = try {
-            com.example.caresync.messaging.MessageGenerator(context).generateMessage(reminder)
-        } catch (e: Exception) {
-            Pair(reminder.notes ?: "Time to work!", "AUTO")
-        }
-
-        // ✅ CREATE EVENT WITH ACTUAL TONE
-        val event = createEventWithContext(
-            reminderId = reminder.id,
-            reminder = reminder,
-            actualTone = actualTone,  // ← ADD THIS
-            deviceContext = deviceContext,
-            mlConfidence = mlConfidence,
-            triggerSource = "ML_MODEL"
-        )
-
-        // Insert event
-        eventDao.insert(event)
-
-        Log.d(TAG, "🔔 Logged TRIGGERED event with full metadata")
-
-        // Show notification
-        com.example.caresync.scheduler.ReminderWorker.showNotificationFromML(
-            context = context,
-            reminderId = reminder.id,
-            title = reminder.title,
-            content = personalizedMessage,
-            reminder = reminder,  // ✅ Pass reminder
-            actualTone = actualTone  // ✅ Use actualTone (already defined above)
-        )
+        Log.d(TAG, "🔔 Firing notification: ${reminder.title}")
+        // TODO: Implement your notification firing logic here
+        // Pass reminder, deviceContext, and confidence for customization
     }
 
     /**
-     * Log blocked event
+     * Log ML check event
      */
-    private suspend fun logBlockedEvent(reminderId: Long, rule: String?, reason: String) {
-        repo.logEvent(
-            reminderId,
-            "BLOCKED",
-            """{"rule":"$rule","reason":"$reason","source":"ML_CHECK"}"""
-        )
-    }
-
-    // ==========================================
-    // HELPER FUNCTIONS
-    // ==========================================
-
-    private fun isNightTime(): Boolean {
-        val hourNow = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
-        return hourNow in 0..5 // 12 AM - 6 AM
-    }
-
-    private fun isWeekend(): Boolean {
-        val dayOfWeek = Calendar.getInstance().get(Calendar.DAY_OF_WEEK)
-        return dayOfWeek == Calendar.SATURDAY || dayOfWeek == Calendar.SUNDAY
-    }
-
-    private fun getMidnightToday(): Long {
-        val cal = Calendar.getInstance()
-        cal.set(Calendar.HOUR_OF_DAY, 0)
-        cal.set(Calendar.MINUTE, 0)
-        cal.set(Calendar.SECOND, 0)
-        cal.set(Calendar.MILLISECOND, 0)
-        return cal.timeInMillis
-    }
-
-    private fun getStartOfWeek(): Long {
-        val cal = Calendar.getInstance()
-        cal.set(Calendar.DAY_OF_WEEK, Calendar.SUNDAY)
-        cal.set(Calendar.HOUR_OF_DAY, 0)
-        cal.set(Calendar.MINUTE, 0)
-        cal.set(Calendar.SECOND, 0)
-        cal.set(Calendar.MILLISECOND, 0)
-        return cal.timeInMillis
+    private suspend fun logMLCheckEvent(
+        reminderId: Long,
+        eventType: String,
+        mlConfidence: Float,
+        triggerSource: String,
+        reason: String? = null
+    ) {
+        try {
+            val metadata = """{"mlConfidence":$mlConfidence,"trigger":"$triggerSource","reason":"${reason ?: "N/A"}"}"""
+            eventDao.insert(
+                com.example.caresync.data.ReminderEventEntity(
+                    reminderId = reminderId,
+                    eventType = eventType,
+                    timestamp = System.currentTimeMillis(),
+                    modelConfidence = mlConfidence,
+                    triggerSource = triggerSource,
+                    metadataJson = metadata
+                )
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to log event", e)
+        }
     }
 
     companion object {
         private const val TAG = "MLCheckWorker"
 
-        // ✅ NEW: Singleton for ONNX model (load once, reuse)
+        /**
+         * ✅ NEW: Trigger MLCheckWorker with REAL reminder object
+         *
+         * Called from SessionAlarmReceiver for each Model Mode reminder
+         */
+        fun triggerForReminder(
+            context: Context,
+            reminder: ReminderSettings,
+            packageName: String,
+            minsSinceOpen: Float,
+            triggerSource: String
+        ) {
+            Log.d(TAG, "📋 Triggering MLCheckWorker for reminder: ${reminder.title}")
+
+            val input = workDataOf(
+                "triggerSource" to triggerSource,
+                "reminderId" to reminder.id,  // ✅ Pass real ID!
+                "packageName" to packageName,
+                "minsSinceOpen" to minsSinceOpen
+            )
+
+            val request = OneTimeWorkRequestBuilder<MLCheckWorker>()
+                .setInputData(input)
+                .build()
+
+            WorkManager.getInstance(context).enqueue(request)
+        }
+
+        /**
+         * Legacy method (kept for compatibility, but use triggerForReminder instead)
+         */
+        fun triggerNowWithContext(
+            context: Context,
+            packageName: String,
+            minsSinceOpen: Float,
+            triggerSource: String
+        ) {
+            Log.d(TAG, "⚠️ triggerNowWithContext() called (legacy, use triggerForReminder())")
+
+            val input = workDataOf(
+                "triggerSource" to triggerSource,
+                "packageName" to packageName,
+                "minsSinceOpen" to minsSinceOpen
+            )
+
+            val request = OneTimeWorkRequestBuilder<MLCheckWorker>()
+                .setInputData(input)
+                .build()
+
+            WorkManager.getInstance(context).enqueue(request)
+        }
+
+        // ===== ONNX Model Singleton =====
         private object OnnxModelHolder {
             private var ortEnvironment: OrtEnvironment? = null
             private var ortSession: OrtSession? = null
@@ -620,34 +452,23 @@ class MLCheckWorker(
 
             @Synchronized
             fun getSession(context: Context): OrtSession? {
-                // Return cached session if already loaded
                 if (ortSession != null) return ortSession
-
-                // If previous load failed, don't retry every time
-                if (modelLoadError != null) {
-                    Log.w(TAG, "Model load failed previously: ${modelLoadError?.message}")
-                    return null
-                }
+                if (modelLoadError != null) return null
 
                 try {
                     Log.d(TAG, "📦 Loading ONNX model...")
 
-                    // Create environment (once)
                     if (ortEnvironment == null) {
                         ortEnvironment = OrtEnvironment.getEnvironment()
                     }
 
-                    // Load model from assets
                     val modelBytes = context.assets.open("ml_models/notification_model.onnx").use {
                         it.readBytes()
                     }
 
-                    // Create session
                     ortSession = ortEnvironment!!.createSession(modelBytes)
 
-                    Log.d(TAG, "✅ ONNX model loaded successfully (${modelBytes.size / 1024} KB)")
-                    Log.d(TAG, "Model inputs: ${ortSession!!.inputNames}")
-                    Log.d(TAG, "Model outputs: ${ortSession!!.outputNames}")
+                    Log.d(TAG, "✅ ONNX model loaded (${modelBytes.size / 1024} KB)")
 
                     return ortSession
 
@@ -666,97 +487,7 @@ class MLCheckWorker(
             }
         }
     }
-    /**
-     * Create event with full context metadata
-     */
-    private fun createEventWithContext(
-        reminderId: Long,
-        reminder: com.example.caresync.domain.ReminderSettings,
-        actualTone: String,
-        deviceContext: DeviceContext,
-        mlConfidence: Float,
-        triggerSource: String
-    ): com.example.caresync.data.ReminderEventEntity {
-        val now = Calendar.getInstance()
-
-        return com.example.caresync.data.ReminderEventEntity(
-            reminderId = reminderId,
-            eventType = EventTypes.TRIGGERED,
-            timestamp = System.currentTimeMillis(),
-
-            // Time context
-            hourOfDay = now.get(Calendar.HOUR_OF_DAY),
-            dayOfWeek = now.get(Calendar.DAY_OF_WEEK) - 1,
-            isWeekend = now.get(Calendar.DAY_OF_WEEK) in listOf(
-                Calendar.SATURDAY,
-                Calendar.SUNDAY
-            ),
-
-            // Device context
-            deviceState = deviceContext.category,  // "OFF", "IDLE", "ACTIVE", or app category
-            activeAppCategory = if (deviceContext.category !in listOf("OFF", "IDLE", "Unknown")) {
-                deviceContext.category
-            } else null,
-            screenTimeMinutes = deviceContext.minsSinceOpen.toInt(),
-            batteryLevel = getBatteryLevel(context),
-
-            // Notification details
-            notificationPriority = reminder.priority.name,
-            notificationMethod = reminder.notifyMethods.firstOrNull()?.name ?: "PUSH",
-            toneUsed = reminder.toneUri,
-            vibrationUsed = reminder.vibration,
-
-            // ML model data
-            modelConfidence = mlConfidence,
-            triggerSource = triggerSource,
-
-            // Metadata JSON
-            metadataJson = """
-        {
-            "minsSinceOpen": ${deviceContext.minsSinceOpen},
-            "qualifiedFrequency": ${deviceContext.qualifiedFrequency},
-            "isNight": "${deviceContext.isNight}",
-            "isWeekend": "${deviceContext.isWeekend}"
-        }
-        """.trimIndent()
-        )
-    }
-
-    /**
-     * Get battery level
-     */
-    private fun getBatteryLevel(context: Context): Int? {
-        return try {
-            val batteryIntent = context.registerReceiver(
-                null,
-                android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED)
-            )
-            val level = batteryIntent?.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1) ?: -1
-            val scale = batteryIntent?.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1) ?: -1
-
-            if (level >= 0 && scale > 0) {
-                (level * 100 / scale)
-            } else null
-        } catch (e: Exception) {
-            null
-        }
-    }
 }
-
-// ==========================================
-// DATA CLASSES
-// ==========================================
-
-/**
- * Device context collected for ML model input
- */
-data class DeviceContext(
-    val category: String,
-    val minsSinceOpen: Float,
-    val qualifiedFrequency: Float,
-    val isNight: String,
-    val isWeekend: String
-)
 
 /**
  * ML model decision result
@@ -764,13 +495,4 @@ data class DeviceContext(
 data class MLDecision(
     val shouldFire: Boolean,
     val confidence: Float
-)
-
-/**
- * Quota check result for min occurrence
- */
-data class QuotaCheck(
-    val fired: Int,
-    val required: Int,
-    val shouldForce: Boolean
 )

@@ -269,11 +269,12 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        // Migration 13→14: Add voice model field
+        // ✅ WITH THIS (REPLACE):
         private val MIGRATION_13_14 = object : Migration(13, 14) {
             override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL("ALTER TABLE reminders ADD COLUMN voiceModel TEXT")
-                Log.d("MIGRATION", "✅ Migration 13→14: Added voiceModel field")
+                // No schema changes needed - voiceModel already added in 12→13
+                // This migration exists for version continuity only
+                Log.d("MIGRATION", "✅ Migration 13→14: Completed (no changes)")
             }
         }
 

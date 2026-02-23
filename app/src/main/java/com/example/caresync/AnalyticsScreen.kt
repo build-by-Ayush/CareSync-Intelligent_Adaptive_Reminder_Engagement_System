@@ -326,6 +326,8 @@ private fun DashboardContent(
             textAlign = androidx.compose.ui.text.style.TextAlign.Center
         )
 
+        Spacer(modifier = Modifier.height(8.dp))
+
 
         // ✅ COMPLETION RATE CHART
         CompletionRateChart(

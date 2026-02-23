@@ -30,4 +30,10 @@ class ReminderRepository(context: Context) {
             )
         )
     }
+
+    suspend fun getAllWithModelMode(): List<ReminderSettings> {
+        return reminderDao.getAllWithModelMode().map { entity ->
+            entity.toDomain()  // Convert Entity to ReminderSettings
+        }
+    }
 }

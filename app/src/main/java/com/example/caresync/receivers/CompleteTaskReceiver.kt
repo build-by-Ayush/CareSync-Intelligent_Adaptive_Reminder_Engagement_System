@@ -10,7 +10,7 @@ import com.example.caresync.analytics.gamification.PointsCalculator
 import com.example.caresync.analytics.repository.AnalyticsRepository
 import com.example.caresync.data.AppDatabase
 import com.example.caresync.domain.EventTypes
-import com.example.caresync.utils.AppBlockManager  // ✅ ADD
+import com.example.caresync.utils.AppBlockManager
 import com.example.caresync.utils.SafeEventLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -26,172 +26,179 @@ class CompleteTaskReceiver : BroadcastReceiver() {
 
         Log.d("REMINDER_EVENT", "✓ COMPLETED: Task $reminderId")
 
+        // ✅ CRITICAL FIX: Add goAsync()
+        val pendingResult = goAsync()
+
         CoroutineScope(Dispatchers.IO).launch {
-            val database = AppDatabase.get(context)
-            val eventDao = database.reminderEventDao()
-            val reminderDao = database.reminderDao()
-            val completionTime = System.currentTimeMillis()
+            try {
+                val database = AppDatabase.get(context)
+                val eventDao = database.reminderEventDao()
+                val reminderDao = database.reminderDao()
+                val completionTime = System.currentTimeMillis()
 
-            // ✅ GET THE TASK (for priority)
-            val task = reminderDao.getById(reminderId)
-            if (task == null) {
-                Log.e("REMINDER_EVENT", "Task not found for ID $reminderId")
-                return@launch
-            }
+                // ✅ GET THE TASK (for priority)
+                val task = reminderDao.getById(reminderId)
+                if (task == null) {
+                    Log.e("REMINDER_EVENT", "Task not found for ID $reminderId")
+                    return@launch
+                }
 
-            // ✅ GET NOTIFICATION SENT TIME (for points calculation)
-            val sentEvent = eventDao.getLastSentEventBeforeCompletion(
-                reminderId = reminderId,
-                completionTimestamp = completionTime
-            )
+                // ✅ GET NOTIFICATION SENT TIME (for points calculation)
+                val sentEvent = eventDao.getLastSentEventBeforeCompletion(
+                    reminderId = reminderId,
+                    completionTimestamp = completionTime
+                )
 
-            // Calculate response time
-            val responseTime = if (sentEvent != null) {
-                completionTime - sentEvent.timestamp
-            } else {
-                // Fallback to old logic if no sent event found
-                try {
+                // Calculate response time
+                val responseTime = if (sentEvent != null) {
+                    completionTime - sentEvent.timestamp
+                } else {
+                    // Fallback to old logic if no sent event found
+                    try {
+                        val oneHourAgo = completionTime - 60 * 60 * 1000L
+                        val events = eventDao.getEventsBetween(reminderId, oneHourAgo, completionTime)
+                        val lastTriggered = events.lastOrNull { it.eventType == EventTypes.TRIGGERED }
+                        if (lastTriggered != null) {
+                            completionTime - lastTriggered.timestamp
+                        } else null
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+
+                // Get snooze count (existing logic)
+                val snoozeCount = try {
                     val oneHourAgo = completionTime - 60 * 60 * 1000L
                     val events = eventDao.getEventsBetween(reminderId, oneHourAgo, completionTime)
-                    val lastTriggered = events.lastOrNull { it.eventType == EventTypes.TRIGGERED }
-                    if (lastTriggered != null) {
-                        completionTime - lastTriggered.timestamp
-                    } else null
+                    val lastTriggeredIndex = events.indexOfLast { it.eventType == EventTypes.TRIGGERED }
+                    if (lastTriggeredIndex >= 0) {
+                        events.drop(lastTriggeredIndex + 1).count { it.eventType == EventTypes.SNOOZED }
+                    } else 0
                 } catch (e: Exception) {
-                    null
+                    0
                 }
-            }
 
-            // Get snooze count (existing logic)
-            val snoozeCount = try {
-                val oneHourAgo = completionTime - 60 * 60 * 1000L
-                val events = eventDao.getEventsBetween(reminderId, oneHourAgo, completionTime)
-                val lastTriggeredIndex = events.indexOfLast { it.eventType == EventTypes.TRIGGERED }
-                if (lastTriggeredIndex >= 0) {
-                    events.drop(lastTriggeredIndex + 1).count { it.eventType == EventTypes.SNOOZED }
-                } else 0
-            } catch (e: Exception) {
-                0
-            }
+                // ✅ GET TONE FROM TRIGGERED EVENT (not from task settings)
+                val toneUsed = sentEvent?.toneUsed ?: "AUTO"
 
-            // ✅ GET TONE FROM TRIGGERED EVENT (not from task settings)
-            val toneUsed = sentEvent?.toneUsed ?: "AUTO"
+                // ✅ LOG COMPLETION EVENT WITH SAME TONE
+                val success = SafeEventLogger.logEvent(
+                    context = context,
+                    reminderId = reminderId,
+                    eventType = EventTypes.COMPLETED,
+                    toneUsed = toneUsed, // ← FIXED: Use tone from TRIGGERED event
+                    responseTimeMillis = responseTime,
+                    snoozeCount = snoozeCount
+                )
 
-            // ✅ LOG COMPLETION EVENT WITH SAME TONE
-            val success = SafeEventLogger.logEvent(
-                context = context,
-                reminderId = reminderId,
-                eventType = EventTypes.COMPLETED,
-                toneUsed = toneUsed, // ← FIXED: Use tone from TRIGGERED event
-                responseTimeMillis = responseTime,
-                snoozeCount = snoozeCount
-            )
+                if (success) {
+                    Log.d("REMINDER_EVENT", "✓ Logged COMPLETED with responseTime=$responseTime ms")
+                }
 
-            if (success) {
-                Log.d("REMINDER_EVENT", "✓ Logged COMPLETED with responseTime=$responseTime ms")
-            }
+                // ✅ CALCULATE POINTS & UPDATE DASHBOARD
+                try {
+                    // ✅ CONVERT STRING PRIORITY TO ENUM
+                    val priorityEnum = try {
+                        when (task.priority.uppercase()) {
+                            "CRITICAL" -> com.example.caresync.domain.Priority.CRITICAL
+                            "HIGH" -> com.example.caresync.domain.Priority.HIGH
+                            "NORMAL" -> com.example.caresync.domain.Priority.NORMAL
+                            "LOW" -> com.example.caresync.domain.Priority.LOW
+                            else -> com.example.caresync.domain.Priority.NORMAL // Default
+                        }
+                    } catch (e: Exception) {
+                        com.example.caresync.domain.Priority.NORMAL // Safe fallback
+                    }
 
-            // ✅ CALCULATE POINTS & UPDATE DASHBOARD
-            try {
-                // ✅ CONVERT STRING PRIORITY TO ENUM
-                val priorityEnum = try {
-                    when (task.priority.uppercase()) {
-                        "CRITICAL" -> com.example.caresync.domain.Priority.CRITICAL
-                        "HIGH" -> com.example.caresync.domain.Priority.HIGH
-                        "NORMAL" -> com.example.caresync.domain.Priority.NORMAL
-                        "LOW" -> com.example.caresync.domain.Priority.LOW
-                        else -> com.example.caresync.domain.Priority.NORMAL // Default
+                    val points = PointsCalculator.calculateTaskPoints(
+                        priority = priorityEnum,
+                        completedAt = completionTime,
+                        notificationSentAt = sentEvent?.timestamp
+                    )
+
+                    Log.d("GAMIFICATION", "Earned $points points for task $reminderId (priority: $priorityEnum)")
+
+                    // ✅ UPDATE USER PROGRESS
+                    val analyticsDao = database.analyticsDao()
+                    val achievementEngine = com.example.caresync.analytics.gamification.AchievementEngine(
+                        analyticsDao = analyticsDao,
+                        reminderEventDao = eventDao
+                    )
+
+                    val repository = AnalyticsRepository(
+                        analyticsDao = analyticsDao,
+                        reminderEventDao = eventDao,
+                        reminderDao = reminderDao,
+                        achievementEngine = achievementEngine
+                    )
+
+                    repository.updateUserProgress(
+                        taskCompleted = true,
+                        pointsEarned = points
+                    )
+
+                    Log.d("GAMIFICATION", "✓ Updated user progress with $points points")
+
+                    // Check for achievement unlocks
+                    val newUnlocks = achievementEngine.checkAndUnlockAchievements()
+                    if (newUnlocks.isNotEmpty()) {
+                        Log.d("GAMIFICATION", "🏆 Unlocked ${newUnlocks.size} achievements!")
+                        newUnlocks.forEach {
+                            Log.d("GAMIFICATION", " - ${it.name} ${it.icon}")
+                        }
+                    }
+
+                } catch (e: Exception) {
+                    Log.e("GAMIFICATION", "Error updating progress: ${e.message}", e)
+                }
+
+                // ✅ NEW: App Blocking Logic
+                task.targetAppPackage?.let { packageName ->
+                    if (packageName.isNotBlank()) {
+                        AppBlockManager.blockApp(packageName)
+
+                        val appName = getAppName(context, packageName)
+
+                        // Show toast and start service
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(
+                                context,
+                                "🚫 $appName blocked for 30 minutes",
+                                Toast.LENGTH_LONG
+                            ).show()
+
+                            // ✅ FIXED: Start the blocking service
+                            val serviceIntent = Intent(context, AppBlockService::class.java)
+                            context.startService(serviceIntent)
+                            Log.d("APP_BLOCK", "🚀 Started AppBlockService")
+                        }
+
+                        Log.d("APP_BLOCK", "🚫 Blocked $appName ($packageName) for 30 minutes")
+                    }
+                }
+
+                // ✅ FIXED: Learn from completion (only if NOT snoozed retrigger)
+                try {
+                    val isSnoozedRetrigger = intent.getBooleanExtra("isSnoozedRetrigger", false)
+
+                    // ✅ SKIP LEARNING IF SNOOZED RETRIGGER
+                    if (isSnoozedRetrigger) {
+                        Log.d("LEARNING_FILTER", "⏭️ Skipping snoozed retrigger for task $reminderId - NOT learning from this completion")
+                    } else {
+                        val currentHour = java.util.Calendar.getInstance()
+                            .get(java.util.Calendar.HOUR_OF_DAY)
+
+                        com.example.caresync.intelligence.OptimalTimeLearner(context)
+                            .updatePreferredTimes(reminderId, currentHour, completed = true)
+
+                        Log.d("LEARNING_FILTER", "✅ Learning from ORIGINAL completion: task $reminderId at hour $currentHour")
                     }
                 } catch (e: Exception) {
-                    com.example.caresync.domain.Priority.NORMAL // Safe fallback
+                    Log.e("ADAPTIVE_LAYER", "Failed to update preferred times", e)
                 }
-
-                val points = PointsCalculator.calculateTaskPoints(
-                    priority = priorityEnum,
-                    completedAt = completionTime,
-                    notificationSentAt = sentEvent?.timestamp
-                )
-
-                Log.d("GAMIFICATION", "Earned $points points for task $reminderId (priority: $priorityEnum)")
-
-                // ✅ UPDATE USER PROGRESS
-                val analyticsDao = database.analyticsDao()
-                val achievementEngine = com.example.caresync.analytics.gamification.AchievementEngine(
-                    analyticsDao = analyticsDao,
-                    reminderEventDao = eventDao
-                )
-
-                val repository = AnalyticsRepository(
-                    analyticsDao = analyticsDao,
-                    reminderEventDao = eventDao,
-                    reminderDao = reminderDao,
-                    achievementEngine = achievementEngine
-                )
-
-                repository.updateUserProgress(
-                    taskCompleted = true,
-                    pointsEarned = points
-                )
-
-                Log.d("GAMIFICATION", "✓ Updated user progress with $points points")
-
-                // Check for achievement unlocks
-                val newUnlocks = achievementEngine.checkAndUnlockAchievements()
-                if (newUnlocks.isNotEmpty()) {
-                    Log.d("GAMIFICATION", "🏆 Unlocked ${newUnlocks.size} achievements!")
-                    newUnlocks.forEach {
-                        Log.d("GAMIFICATION", " - ${it.name} ${it.icon}")
-                    }
-                }
-
-            } catch (e: Exception) {
-                Log.e("GAMIFICATION", "Error updating progress: ${e.message}", e)
-            }
-
-            // ✅ NEW: App Blocking Logic
-            task.targetAppPackage?.let { packageName ->
-                if (packageName.isNotBlank()) {
-                    AppBlockManager.blockApp(packageName)
-
-                    val appName = getAppName(context, packageName)
-
-                    // Show toast and start service
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(
-                            context,
-                            "🚫 $appName blocked for 30 minutes",
-                            Toast.LENGTH_LONG
-                        ).show()
-
-                        // ✅ FIXED: Start the blocking service
-                        val serviceIntent = Intent(context, AppBlockService::class.java)
-                        context.startService(serviceIntent)
-                        Log.d("APP_BLOCK", "🚀 Started AppBlockService")
-                    }
-
-                    Log.d("APP_BLOCK", "🚫 Blocked $appName ($packageName) for 30 minutes")
-                }
-            }
-
-            // ✅ FIXED: Learn from completion (only if NOT snoozed retrigger)
-            try {
-                val isSnoozedRetrigger = intent.getBooleanExtra("isSnoozedRetrigger", false)  // ✅ ADD THIS LINE
-
-                // ✅ SKIP LEARNING IF SNOOZED RETRIGGER
-                if (isSnoozedRetrigger) {
-                    Log.d("LEARNING_FILTER", "⏭️ Skipping snoozed retrigger for task $reminderId - NOT learning from this completion")
-                    // Don't call OptimalTimeLearner - continue to next section
-                } else {
-                    val currentHour = java.util.Calendar.getInstance()
-                        .get(java.util.Calendar.HOUR_OF_DAY)
-
-                    com.example.caresync.intelligence.OptimalTimeLearner(context)
-                        .updatePreferredTimes(reminderId, currentHour, completed = true)
-
-                    Log.d("LEARNING_FILTER", "✅ Learning from ORIGINAL completion: task $reminderId at hour $currentHour")
-                }
-            } catch (e: Exception) {
-                Log.e("ADAPTIVE_LAYER", "Failed to update preferred times", e)
+            } finally {
+                // ✅ CRITICAL: Signal completion to system
+                pendingResult.finish()
             }
         }
 

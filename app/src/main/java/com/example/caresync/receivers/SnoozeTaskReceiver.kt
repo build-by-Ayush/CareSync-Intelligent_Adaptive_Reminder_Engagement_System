@@ -21,142 +21,150 @@ class SnoozeTaskReceiver : BroadcastReceiver() {
         val reminderId = intent.getLongExtra("reminderId", -1L)
         if (reminderId == -1L) return
 
+        // ✅ ADD THIS
+        val pendingResult = goAsync()
+
         CoroutineScope(Dispatchers.IO).launch {
-            val repo = ReminderRepository(context)
-            val reminder = repo.get(reminderId)
+            try {
+                val repo = ReminderRepository(context)
+                val reminder = repo.get(reminderId)
 
-            if (reminder == null) {
-                Log.w("SNOOZE", "⚠️ Task $reminderId no longer exists, ignoring snooze")
-                return@launch
-            }
-
-            val eventDao = AppDatabase.get(context).reminderEventDao()
-
-            // ✅ CHECK: Count recent snoozes
-            val oneHourAgo = System.currentTimeMillis() - 60 * 60 * 1000L
-            val recentEvents = eventDao.getEventsBetween(reminderId, oneHourAgo, System.currentTimeMillis())
-
-            val currentSnoozeCount = try {
-                val lastTriggeredIndex = recentEvents.indexOfLast { it.eventType == EventTypes.TRIGGERED }
-                if (lastTriggeredIndex >= 0) {
-                    recentEvents.drop(lastTriggeredIndex + 1).count { it.eventType == EventTypes.SNOOZED }
-                } else {
-                    recentEvents.count { it.eventType == EventTypes.SNOOZED }
+                if (reminder == null) {
+                    Log.w("SNOOZE", "⚠️ Task $reminderId no longer exists, ignoring snooze")
+                    return@launch
                 }
-            } catch (e: Exception) {
-                0
-            }
 
-            // ✅ BLOCK if limit reached (defensive check)
-            if (currentSnoozeCount >= reminder.maxSnoozes) {
-                Log.w("SNOOZE", "🚫 Max snooze limit reached ($currentSnoozeCount >= ${reminder.maxSnoozes})")
+                val eventDao = AppDatabase.get(context).reminderEventDao()
 
-                // Show toast
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(
+                // ✅ CHECK: Count recent snoozes
+                val oneHourAgo = System.currentTimeMillis() - 60 * 60 * 1000L
+                val recentEvents = eventDao.getEventsBetween(reminderId, oneHourAgo, System.currentTimeMillis())
+
+                val currentSnoozeCount = try {
+                    val lastTriggeredIndex = recentEvents.indexOfLast { it.eventType == EventTypes.TRIGGERED }
+                    if (lastTriggeredIndex >= 0) {
+                        recentEvents.drop(lastTriggeredIndex + 1).count { it.eventType == EventTypes.SNOOZED }
+                    } else {
+                        recentEvents.count { it.eventType == EventTypes.SNOOZED }
+                    }
+                } catch (e: Exception) {
+                    0
+                }
+
+                // ✅ BLOCK if limit reached (defensive check)
+                if (currentSnoozeCount >= reminder.maxSnoozes) {
+                    Log.w("SNOOZE", "🚫 Max snooze limit reached ($currentSnoozeCount >= ${reminder.maxSnoozes})")
+
+                    // Show toast
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(
+                            context,
+                            "⚠️ Max snooze limit reached. Please complete or dismiss the task.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+
+                    // Cancel notification
+                    val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    nm.cancel(reminderId.toInt())
+
+                    return@launch
+                }
+
+                val snoozeDuration = reminder.snoozeDurationMinutes
+                Log.d("REMINDER_EVENT", "⏰ SNOOZED: Task $reminderId for $snoozeDuration min (count: ${currentSnoozeCount + 1}/${reminder.maxSnoozes})")
+
+                // ✅ SAFE LOGGING
+                val success = SafeEventLogger.logEvent(
+                    context = context,
+                    reminderId = reminderId,
+                    eventType = EventTypes.SNOOZED,
+                    snoozeDurationMinutes = snoozeDuration,
+                    snoozeCount = currentSnoozeCount + 1
+                )
+
+                if (success) {
+                    // ✅ FIXED: Use AlarmManager for reliable snooze timing
+                    val snoozeDelayMillis = snoozeDuration * 60 * 1000L
+                    val snoozeTime = System.currentTimeMillis() + snoozeDelayMillis
+
+                    val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+
+                    // Create PendingIntent for ReminderWorker
+                    val snoozeIntent = Intent(context, SnoozeAlarmReceiver::class.java).apply {
+                        putExtra("reminderId", reminderId)
+                    }
+
+                    val pendingIntent = android.app.PendingIntent.getBroadcast(
                         context,
-                        "⚠️ Max snooze limit reached. Please complete or dismiss the task.",
-                        Toast.LENGTH_LONG
-                    ).show()
+                        (reminderId * 1000 + 999).toInt(),  // Unique ID for snooze
+                        snoozeIntent,
+                        android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+                    )
+
+                    // ✅ Check permission and schedule exact alarm
+                    try {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                            // Android 12+ requires permission check
+                            if (alarmManager.canScheduleExactAlarms()) {
+                                alarmManager.setExactAndAllowWhileIdle(
+                                    android.app.AlarmManager.RTC_WAKEUP,
+                                    snoozeTime,
+                                    pendingIntent
+                                )
+                                Log.d("SNOOZE", "✅ Scheduled exact snooze alarm for ${java.text.SimpleDateFormat("HH:mm:ss").format(snoozeTime)}")
+                            } else {
+                                // Fallback to inexact alarm if permission not granted
+                                alarmManager.setAndAllowWhileIdle(
+                                    android.app.AlarmManager.RTC_WAKEUP,
+                                    snoozeTime,
+                                    pendingIntent
+                                )
+                                Log.w("SNOOZE", "⚠️ Scheduled inexact snooze (no exact alarm permission)")
+                            }
+                        } else {
+                            // Android 11 and below - no permission needed
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                                alarmManager.setExactAndAllowWhileIdle(
+                                    android.app.AlarmManager.RTC_WAKEUP,
+                                    snoozeTime,
+                                    pendingIntent
+                                )
+                            } else {
+                                alarmManager.setExact(
+                                    android.app.AlarmManager.RTC_WAKEUP,
+                                    snoozeTime,
+                                    pendingIntent
+                                )
+                            }
+                            Log.d("SNOOZE", "✅ Scheduled exact snooze alarm for ${java.text.SimpleDateFormat("HH:mm:ss").format(snoozeTime)}")
+                        }
+                    } catch (e: SecurityException) {
+                        Log.e("SNOOZE", "Failed to schedule snooze alarm", e)
+                        // Fallback to WorkManager if AlarmManager fails
+                        val snoozeWorkRequest = androidx.work.OneTimeWorkRequestBuilder<com.example.caresync.scheduler.ReminderWorker>()
+                            .setInitialDelay(snoozeDelayMillis, java.util.concurrent.TimeUnit.MILLISECONDS)
+                            .setInputData(
+                                androidx.work.workDataOf(
+                                    "reminderId" to reminderId,
+                                    "isSnooze" to true
+                                )
+                            )
+                            .addTag("snooze-$reminderId")
+                            .build()
+
+                        androidx.work.WorkManager.getInstance(context).enqueue(snoozeWorkRequest)
+                        Log.d("SNOOZE", "⚠️ Fallback: Scheduled via WorkManager")
+                    }
                 }
 
                 // Cancel notification
                 val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 nm.cancel(reminderId.toInt())
-
-                return@launch
+            } finally {
+                // ✅ ADD THIS
+                pendingResult.finish()
             }
-
-            val snoozeDuration = reminder.snoozeDurationMinutes
-            Log.d("REMINDER_EVENT", "⏰ SNOOZED: Task $reminderId for $snoozeDuration min (count: ${currentSnoozeCount + 1}/${reminder.maxSnoozes})")
-
-            // ✅ SAFE LOGGING
-            val success = SafeEventLogger.logEvent(
-                context = context,
-                reminderId = reminderId,
-                eventType = EventTypes.SNOOZED,
-                snoozeDurationMinutes = snoozeDuration,
-                snoozeCount = currentSnoozeCount + 1
-            )
-
-            if (success) {
-                // ✅ FIXED: Use AlarmManager for reliable snooze timing
-                val snoozeDelayMillis = snoozeDuration * 60 * 1000L
-                val snoozeTime = System.currentTimeMillis() + snoozeDelayMillis
-
-                val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
-
-                // Create PendingIntent for ReminderWorker
-                val snoozeIntent = Intent(context, SnoozeAlarmReceiver::class.java).apply {
-                    putExtra("reminderId", reminderId)
-                }
-
-                val pendingIntent = android.app.PendingIntent.getBroadcast(
-                    context,
-                    (reminderId * 1000 + 999).toInt(),  // Unique ID for snooze
-                    snoozeIntent,
-                    android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
-                )
-
-                // ✅ Check permission and schedule exact alarm
-                try {
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                        // Android 12+ requires permission check
-                        if (alarmManager.canScheduleExactAlarms()) {
-                            alarmManager.setExactAndAllowWhileIdle(
-                                android.app.AlarmManager.RTC_WAKEUP,
-                                snoozeTime,
-                                pendingIntent
-                            )
-                            Log.d("SNOOZE", "✅ Scheduled exact snooze alarm for ${java.text.SimpleDateFormat("HH:mm:ss").format(snoozeTime)}")
-                        } else {
-                            // Fallback to inexact alarm if permission not granted
-                            alarmManager.setAndAllowWhileIdle(
-                                android.app.AlarmManager.RTC_WAKEUP,
-                                snoozeTime,
-                                pendingIntent
-                            )
-                            Log.w("SNOOZE", "⚠️ Scheduled inexact snooze (no exact alarm permission)")
-                        }
-                    } else {
-                        // Android 11 and below - no permission needed
-                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-                            alarmManager.setExactAndAllowWhileIdle(
-                                android.app.AlarmManager.RTC_WAKEUP,
-                                snoozeTime,
-                                pendingIntent
-                            )
-                        } else {
-                            alarmManager.setExact(
-                                android.app.AlarmManager.RTC_WAKEUP,
-                                snoozeTime,
-                                pendingIntent
-                            )
-                        }
-                        Log.d("SNOOZE", "✅ Scheduled exact snooze alarm for ${java.text.SimpleDateFormat("HH:mm:ss").format(snoozeTime)}")
-                    }
-                } catch (e: SecurityException) {
-                    Log.e("SNOOZE", "Failed to schedule snooze alarm", e)
-                    // Fallback to WorkManager if AlarmManager fails
-                    val snoozeWorkRequest = androidx.work.OneTimeWorkRequestBuilder<com.example.caresync.scheduler.ReminderWorker>()
-                        .setInitialDelay(snoozeDelayMillis, java.util.concurrent.TimeUnit.MILLISECONDS)
-                        .setInputData(
-                            androidx.work.workDataOf(
-                                "reminderId" to reminderId,
-                                "isSnooze" to true
-                            )
-                        )
-                        .addTag("snooze-$reminderId")
-                        .build()
-
-                    androidx.work.WorkManager.getInstance(context).enqueue(snoozeWorkRequest)
-                    Log.d("SNOOZE", "⚠️ Fallback: Scheduled via WorkManager")
-                }
-            }
-
-            // Cancel notification
-            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            nm.cancel(reminderId.toInt())
         }
     }
 

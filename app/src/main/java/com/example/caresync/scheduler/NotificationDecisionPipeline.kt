@@ -81,26 +81,31 @@ class NotificationDecisionPipeline(private val context: Context) {
         // ==========================================
         // CHECK 5: Blacklist Check (ONLY for random-time modes)
         // ==========================================
-        // ✅ NEW: Only applies to Model Mode ML checks and random-time repetitive modes
+
+        //  Only applies to Model Mode ML checks and random-time repetitive modes
         val hourNow = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
         if (shouldCheckBlacklist(reminder, triggerSource)) {
-            val blacklistDao = AppDatabase.get(context).blacklistHourDao()
-            val blacklist = blacklistDao.getBlacklist(reminder.id, hourNow)
+            try {
+                val blacklistDao = AppDatabase.get(context).blacklistHourDao()
+                val blacklist = blacklistDao.getBlacklist(reminder.id, hourNow)
+                //              ↑ Now properly error-handled
 
-            // If hour is blacklisted (5+ dismissals) AND task is not HIGH priority
-            if (blacklist != null && blacklist.dismissalCount >= 5) {
-                // HIGH priority bypasses blacklist
-                if (reminder.priority == com.example.caresync.domain.Priority.HIGH ||
-                    reminder.priority == com.example.caresync.domain.Priority.CRITICAL) {
-                    Log.d("PIPELINE", "⚠️ Hour $hourNow blacklisted but HIGH priority bypasses")
-                } else {
-                    return DecisionResult(
-                        shouldSend = false,
-                        reason = "Hour $hourNow blacklisted (${blacklist.dismissalCount} dismissals)",
-                        blockingRule = "BLACKLISTED_HOUR",
-                        metadata = mapOf("hour" to hourNow, "dismissalCount" to blacklist.dismissalCount)
-                    )
+                if (blacklist != null && blacklist.dismissalCount >= 5) {
+                    if (reminder.priority != Priority.HIGH && reminder.priority != Priority.CRITICAL) {
+                        return DecisionResult(
+                            shouldSend = false,
+                            reason = "Hour $hourNow blacklisted (${blacklist.dismissalCount} dismissals)",
+                            blockingRule = "BLACKLISTED_HOUR",
+                            metadata = mapOf("hour" to hourNow, "dismissalCount" to blacklist.dismissalCount)
+                        )
+                    } else {
+                        Log.d(TAG, "⚠️ Hour $hourNow blacklisted but HIGH priority bypasses")
+                    }
                 }
+            } catch (e: Exception) {
+                // ✅ NEW: Handle DB failure gracefully
+                Log.w(TAG, "Blacklist check failed, continuing without blacklist", e)
+                // Don't block - fail open (allow notification)
             }
         }
 
@@ -132,7 +137,7 @@ class NotificationDecisionPipeline(private val context: Context) {
         // ==========================================
         // ✅ UPDATED: Skip quota check for snoozed notifications (user-initiated)
         if (triggerSource != "SNOOZE") {  // ✅ ADD THIS CHECK
-            val quotaExceeded = checkPriorityQuota(reminder.priority)
+            val quotaExceeded = checkPriorityQuota(reminder.priority, reminder.id)
             if (quotaExceeded) {
                 return DecisionResult(
                     shouldSend = false,
@@ -146,25 +151,37 @@ class NotificationDecisionPipeline(private val context: Context) {
             Log.d("PIPELINE", "✅ Snooze notification bypasses priority quota")
         }
 
-        // ✅ NEW CHECK: Time Period Restriction (EXCEPT for snooze)
+        // ✅ NEW CHECK: Time Period Restriction (EXCEPT for snooze and night hours)
         if (reminder.allowedTimePeriods.isNotEmpty() && triggerSource != "SNOOZE") {
             val currentHour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
-            val isWithinAllowedPeriod = reminder.allowedTimePeriods.any {
-                it.isWithinPeriod(currentHour)
-            }
 
-            if (!isWithinAllowedPeriod) {
-                Log.d(TAG, "🚫 Blocked by TIME_PERIOD: Hour $currentHour not in ${reminder.allowedTimePeriods}")
-                return DecisionResult(
-                    shouldSend = false,
-                    reason = "Outside allowed time periods",
-                    blockingRule = "TIME_PERIOD_RESTRICTED"
-                )
+            // ✅ NEW: If it's night time (12 AM - 6 AM), allow it through
+            // MessageGenerator will handle with gentle tone
+            val isNightTime = currentHour in 0..5
+
+            if (isNightTime) {
+                Log.d(TAG, "✅ Night time (hour $currentHour), bypassing time period check for gentle notification")
+                // Don't block - let MessageGenerator handle it with gentle tone
+            } else {
+                // ✅ Normal time period check for daytime hours
+                val isWithinAllowedPeriod = reminder.allowedTimePeriods.any {
+                    it.isWithinPeriod(currentHour)
+                }
+
+                if (!isWithinAllowedPeriod) {
+                    Log.d(TAG, "🚫 Blocked by TIME_PERIOD: Hour $currentHour not in ${reminder.allowedTimePeriods}")
+                    return DecisionResult(
+                        shouldSend = false,
+                        reason = "Outside allowed time periods",
+                        blockingRule = "TIME_PERIOD_RESTRICTED"
+                    )
+                }
+                Log.d(TAG, "✅ Time period OK (hour $currentHour)")
             }
-            Log.d(TAG, "✅ Time period OK (hour $currentHour)")
         } else if (triggerSource == "SNOOZE") {
             Log.d(TAG, "✅ Snooze bypasses time period restrictions")
         }
+
 
         // ==========================================
         // CHECK 8: Context-Aware (Enhance During Distraction Apps) [Removed]
@@ -230,17 +247,18 @@ class NotificationDecisionPipeline(private val context: Context) {
     /**
      * ✅ UPDATED: Check if priority quota exceeded (prevent notification spam)
      */
-    private suspend fun checkPriorityQuota(priority: Priority): Boolean {
+    // ✅ CORRECT:
+    private suspend fun checkPriorityQuota(priority: Priority, reminderId: Long): Boolean {
         val oneHourAgo = System.currentTimeMillis() - 60 * 60 * 1000L
         val now = System.currentTimeMillis()
 
         return try {
-            // Count ALL triggered notifications in last hour, grouped by priority
-            val allEvents = eventDao.getEventsBetween(0, oneHourAgo, now)
-            val recentNotifications = allEvents.filter {
-                it.eventType == EventTypes.TRIGGERED &&
-                        it.notificationPriority == priority.name
-            }.size
+            // ✅ Get events for THIS reminder only
+            val recentNotifications = eventDao.getEventsBetween(reminderId, oneHourAgo, now)
+                .filter {
+                    it.eventType == EventTypes.TRIGGERED &&
+                            it.notificationPriority == priority.name
+                }.size
 
             // ✅ UPDATED: New quota limits per priority
             val quotaLimit = when (priority) {
@@ -258,15 +276,6 @@ class NotificationDecisionPipeline(private val context: Context) {
         } catch (e: Exception) {
             false  // Fail open (allow notification if quota check fails)
         }
-    }
-
-    /**
-     * Get currently active app category (from UsageStatsManager)
-     * TODO: Implement using UsageStatsManager.queryUsageStats
-     */
-    private fun getActiveAppCategory(context: Context): String? {
-        // Placeholder - implement in Phase 5.5 when integrating ML model
-        return null
     }
 
     /**

@@ -5,7 +5,9 @@ import android.database.sqlite.SQLiteConstraintException
 import android.util.Log
 import com.example.caresync.data.AppDatabase
 import com.example.caresync.data.ReminderEventEntity
-import com.example.caresync.domain.EventTypes
+import android.os.BatteryManager
+import android.content.Intent
+import android.content.IntentFilter
 import java.util.Calendar
 
 /**
@@ -14,6 +16,10 @@ import java.util.Calendar
  */
 object SafeEventLogger {
     private const val TAG = "SAFE_LOGGER"
+    private const val BATTERY_CACHE_DURATION_MS = 60 * 1000L
+
+    private var cachedBatteryLevel: Int? = null
+    private var lastBatteryCheckTime: Long = 0
 
     /**
      * Log event with full error handling
@@ -23,23 +29,13 @@ object SafeEventLogger {
         context: Context,
         reminderId: Long,
         eventType: String,
-        toneUsed: String? = null,  // ← ADD THIS PARAMETER
+        toneUsed: String? = null,
         responseTimeMillis: Long? = null,
         snoozeDurationMinutes: Int? = null,
         snoozeCount: Int = 0,
         metadataJson: String? = null
     ): Boolean {
         return try {
-            // First check if task still exists
-            val db = AppDatabase.get(context)
-            val taskExists = db.reminderDao().getById(reminderId) != null
-
-            if (!taskExists) {
-                Log.w(TAG, "⚠️ Task $reminderId no longer exists, skipping $eventType event")
-                return false
-            }
-
-            // Task exists, safe to log
             val now = Calendar.getInstance()
             val event = ReminderEventEntity(
                 reminderId = reminderId,
@@ -62,19 +58,23 @@ object SafeEventLogger {
                 // Device context
                 batteryLevel = getBatteryLevel(context),
 
-                // ✅ NEW: Tone tracking
-                toneUsed = toneUsed,  // ← ADD THIS
+                // ✅ Tone tracking
+                toneUsed = toneUsed,
 
                 // Metadata
                 metadataJson = metadataJson,
                 triggerSource = "USER_ACTION"
             )
 
+            // ✅ FIXED: Just try to insert and let database handle constraints
+            val db = AppDatabase.get(context)
             db.reminderEventDao().insert(event)
+
             Log.d(TAG, "✅ Logged $eventType for task $reminderId (tone: $toneUsed)")
             true
 
         } catch (e: SQLiteConstraintException) {
+            // Task was deleted - foreign key constraint violated
             Log.w(TAG, "⚠️ Foreign key error for task $reminderId: Task was just deleted")
             false
         } catch (e: Exception) {
@@ -84,21 +84,35 @@ object SafeEventLogger {
     }
 
     /**
-     * Get current battery level
+     * ✅ OPTIMIZED: Get current battery level with caching
      */
     private fun getBatteryLevel(context: Context): Int? {
+        val now = System.currentTimeMillis()
+
+        // Return cached value if still fresh
+        if (now - lastBatteryCheckTime < BATTERY_CACHE_DURATION_MS && cachedBatteryLevel != null) {
+            return cachedBatteryLevel
+        }
+
         return try {
             val batteryIntent = context.registerReceiver(
                 null,
-                android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED)
+                IntentFilter(Intent.ACTION_BATTERY_CHANGED)
             )
-            val level = batteryIntent?.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1) ?: -1
-            val scale = batteryIntent?.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1) ?: -1
+            val level = batteryIntent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+            val scale = batteryIntent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
 
-            if (level >= 0 && scale > 0) {
+            val result = if (level >= 0 && scale > 0) {
                 (level * 100 / scale)
             } else null
+
+            // Cache the result
+            cachedBatteryLevel = result
+            lastBatteryCheckTime = now
+
+            result
         } catch (e: Exception) {
+            Log.w(TAG, "Failed to get battery level", e)
             null
         }
     }
